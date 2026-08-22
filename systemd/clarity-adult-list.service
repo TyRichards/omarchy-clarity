@@ -1,8 +1,8 @@
 [Unit]
-Description=Update Clarity's permanent adult-site blocklist
+Description=Update Clarity's permanent and focus blocklists
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/lib/clarity/clarity-root update-adult
+ExecStart=/usr/local/lib/clarity/clarity-root update-lists

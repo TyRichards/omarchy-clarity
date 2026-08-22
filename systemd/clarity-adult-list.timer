@@ -1,5 +1,5 @@
 [Unit]
-Description=Refresh Clarity's permanent adult-site blocklist weekly
+Description=Refresh Clarity's permanent and focus blocklists weekly
 
 [Timer]
 OnBootSec=15min

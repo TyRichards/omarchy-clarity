@@ -1,0 +1,61 @@
+# AI tools are explicitly excluded from every Clarity blocklist.
+# A listed domain also allows all of its subdomains.
+
+# OpenAI / ChatGPT
+chatgpt.com
+openai.com
+oaistatic.com
+oaiusercontent.com
+
+# Anthropic / Claude
+claude.ai
+anthropic.com
+
+# Major general-purpose AI assistants
+perplexity.ai
+pplx.ai
+gemini.google.com
+aistudio.google.com
+notebooklm.google.com
+copilot.microsoft.com
+mistral.ai
+lechat.com
+grok.com
+x.ai
+meta.ai
+poe.com
+character.ai
+deepseek.com
+you.com
+pi.ai
+
+# AI search, research, and models
+phind.com
+consensus.app
+elicit.com
+scite.ai
+huggingface.co
+replicate.com
+together.ai
+groq.com
+cohere.com
+
+# AI coding and creation tools
+cursor.com
+windsurf.com
+codeium.com
+replit.com
+v0.dev
+bolt.new
+lovable.dev
+sourcegraph.com
+
+# Image, audio, and video generation tools
+midjourney.com
+ideogram.ai
+runwayml.com
+stability.ai
+adobe.com
+suno.com
+udio.com
+elevenlabs.io

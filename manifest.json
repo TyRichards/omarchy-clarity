@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "id": "io.github.tyrichards.clarity",
   "name": "Clarity",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "Ty Richards",
-  "description": "Password-guarded distraction blocking with a daily focus schedule",
+  "description": "Massive permanent adult blocking and password-guarded output focus scheduling",
   "license": "MIT",
   "kinds": [
     "bar-widget"
@@ -14,7 +14,7 @@
   },
   "barWidget": {
     "displayName": "Clarity",
-    "description": "Block distracting sites and schedule a daily focus window",
+    "description": "Block adult content permanently and output killers on a focus schedule",
     "category": "System",
     "allowMultiple": false,
     "defaultSection": "right"

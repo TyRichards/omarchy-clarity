@@ -46,7 +46,8 @@ Commands:
   schedule STATE START END       Enable/disable a daily HH:MM window
   sites list                     Print the distracting-domain list
   sites edit                     Edit the list, guarded by the password
-  update-adult                   Refresh the permanent adult blocklist
+  update-lists                   Refresh permanent and focus blocklists
+  update-adult                   Alias for update-lists
   reconcile                      Re-apply current state
   uninstall                      Remove system integration (v1: no password)
 USAGE
@@ -114,9 +115,9 @@ sites)
   *) fail "sites requires list or edit" ;;
   esac
   ;;
-update-adult)
-  (($# == 0)) || fail "update-adult takes no arguments"
-  run_root update-adult
+update-lists | update-adult)
+  (($# == 0)) || fail "$command takes no arguments"
+  run_root update-lists
   ;;
 reconcile)
   (($# == 0)) || fail "reconcile takes no arguments"

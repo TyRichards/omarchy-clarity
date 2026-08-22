@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import base64
 import datetime as dt
-import getpass
 import hashlib
 import hmac
 import json
@@ -20,11 +19,38 @@ import tempfile
 import urllib.request
 
 APP = "clarity"
-ADULT_URL = os.environ.get(
-    "CLARITY_ADULT_URL",
+DEFAULT_ADULT_URLS = [
+    "https://blocklistproject.github.io/Lists/alt-version/porn-nl.txt",
+    "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/nsfw-onlydomains.txt",
     "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/porn-only/hosts",
-)
-MIN_ADULT_DOMAINS = int(os.environ.get("CLARITY_MIN_ADULT_DOMAINS", "1000"))
+]
+DEFAULT_DISTRACTION_URLS = [
+    "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/social-onlydomains.txt",
+    "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/social-only/hosts",
+    "https://blocklistproject.github.io/Lists/alt-version/facebook-nl.txt",
+    "https://blocklistproject.github.io/Lists/alt-version/tiktok-nl.txt",
+    "https://blocklistproject.github.io/Lists/alt-version/twitter-nl.txt",
+    "https://blocklistproject.github.io/Lists/alt-version/youtube-nl.txt",
+    "https://blocklistproject.github.io/Lists/alt-version/whatsapp-nl.txt",
+    "https://blocklistproject.github.io/Lists/alt-version/gambling-nl.txt",
+    "https://blocklistproject.github.io/Lists/alt-version/torrent-nl.txt",
+    "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/native.amazon-onlydomains.txt",
+]
+
+
+def configured_urls(plural_name: str, legacy_name: str, defaults: list[str]) -> list[str]:
+    raw = os.environ.get(plural_name)
+    if raw is None and legacy_name:
+        raw = os.environ.get(legacy_name)
+    if raw is None:
+        return defaults
+    return [value.strip() for value in raw.split(",") if value.strip()]
+
+
+ADULT_URLS = configured_urls("CLARITY_ADULT_URLS", "CLARITY_ADULT_URL", DEFAULT_ADULT_URLS)
+DISTRACTION_URLS = configured_urls("CLARITY_DISTRACTION_URLS", "", DEFAULT_DISTRACTION_URLS)
+MIN_ADULT_DOMAINS = int(os.environ.get("CLARITY_MIN_ADULT_DOMAINS", "50000"))
+MIN_DISTRACTION_DOMAINS = int(os.environ.get("CLARITY_MIN_DISTRACTION_DOMAINS", "1000"))
 TEST_ROOT = os.environ.get("CLARITY_TEST_ROOT", "")
 
 
@@ -38,7 +64,9 @@ STATE_DIR = rooted("/var/lib/clarity")
 CONFIG_FILE = STATE_DIR / "config.json"
 PASSWORD_FILE = STATE_DIR / "password.json"
 ADULT_FILE = STATE_DIR / "adult-domains.txt"
+DISTRACTION_FEED_FILE = STATE_DIR / "distraction-feed-domains.txt"
 SITES_FILE = STATE_DIR / "distractions.txt"
+ALLOWLIST_FILE = STATE_DIR / "ai-allowlist.txt"
 BACKUP_FILE = STATE_DIR / "hosts.pre-clarity"
 HOSTS_FILE = rooted("/etc/hosts")
 ROOT_HELPER = rooted("/usr/local/lib/clarity/clarity-root")
@@ -159,6 +187,14 @@ def read_domains(path: Path) -> list[str]:
     return parse_domain_lines(path.read_text(encoding="utf-8"))
 
 
+def is_allowlisted(domain: str, allowlist: list[str]) -> bool:
+    return any(domain == allowed or domain.endswith("." + allowed) for allowed in allowlist)
+
+
+def without_allowlisted(domains: list[str], allowlist: list[str]) -> list[str]:
+    return sorted(domain for domain in domains if not is_allowlisted(domain, allowlist))
+
+
 def expanded_distraction_domains(domains: list[str]) -> list[str]:
     expanded: set[str] = set()
     for domain in domains:
@@ -168,6 +204,13 @@ def expanded_distraction_domains(domains: list[str]) -> list[str]:
         if not domain.startswith("m."):
             expanded.add(f"m.{domain}")
     return sorted(expanded)
+
+
+def effective_distraction_domains() -> list[str]:
+    allowlist = read_domains(ALLOWLIST_FILE)
+    feed = without_allowlisted(read_domains(DISTRACTION_FEED_FILE), allowlist)
+    curated = without_allowlisted(read_domains(SITES_FILE), allowlist)
+    return sorted(set(feed) | set(expanded_distraction_domains(curated)))
 
 
 def strip_managed_sections(text: str) -> str:
@@ -190,8 +233,12 @@ def strip_managed_sections(text: str) -> str:
 
 
 def render_section(begin: str, end: str, domains: list[str]) -> str:
+    # /etc/hosts supports aliases after an address. Grouping eight domains per
+    # row keeps million-domain lists much smaller without changing resolution.
     lines = [begin]
-    lines.extend(f"0.0.0.0 {domain}" for domain in domains)
+    group_size = 8
+    for index in range(0, len(domains), group_size):
+        lines.append("0.0.0.0 " + " ".join(domains[index : index + group_size]))
     lines.append(end)
     return "\n".join(lines)
 
@@ -225,14 +272,19 @@ def effective_active(config: dict, now: dt.datetime | None = None) -> bool:
 
 def apply_hosts() -> bool:
     config = read_json(CONFIG_FILE)
-    adult_domains = read_domains(ADULT_FILE)
-    if len(adult_domains) < MIN_ADULT_DOMAINS:
+    adult_enabled = bool(config.get("adultBlockingEnabled", True))
+    allowlist = read_domains(ALLOWLIST_FILE)
+    adult_domains = without_allowlisted(read_domains(ADULT_FILE), allowlist) if adult_enabled else []
+    if adult_enabled and len(adult_domains) < MIN_ADULT_DOMAINS:
         fail("permanent adult blocklist is missing or unexpectedly small")
-    distraction_domains = expanded_distraction_domains(read_domains(SITES_FILE))
+    distraction_domains = effective_distraction_domains()
+    if len(distraction_domains) < MIN_DISTRACTION_DOMAINS:
+        fail("focus blocklist is missing or unexpectedly small")
     original = HOSTS_FILE.read_text(encoding="utf-8") if HOSTS_FILE.exists() else ""
     base = strip_managed_sections(original)
     parts = [base] if base else []
-    parts.append(render_section(PERMANENT_BEGIN, PERMANENT_END, adult_domains))
+    if adult_enabled:
+        parts.append(render_section(PERMANENT_BEGIN, PERMANENT_END, adult_domains))
     if effective_active(config):
         parts.append(render_section(DISTRACTIONS_BEGIN, DISTRACTIONS_END, distraction_domains))
     content = "\n\n".join(parts) + "\n"
@@ -297,23 +349,61 @@ def read_password_from_stdin() -> str:
     return password.rstrip("\r\n")
 
 
-def update_adult_list(apply: bool = True) -> int:
-    request = urllib.request.Request(ADULT_URL, headers={"User-Agent": "omarchy-clarity/0.1"})
-    try:
-        with urllib.request.urlopen(request, timeout=45) as response:
-            payload = response.read().decode("utf-8")
-    except Exception as error:
-        fail(f"could not download the permanent adult blocklist: {error}")
-    domains = parse_domain_lines(payload, hosts_format=True)
-    if len(domains) < MIN_ADULT_DOMAINS:
-        fail(f"downloaded adult blocklist contained only {len(domains)} domains")
-    atomic_write(ADULT_FILE, "\n".join(domains) + "\n", 0o644)
+def download_sources(urls: list[str], label: str) -> tuple[list[str], list[str]]:
+    merged: set[str] = set()
+    successful: list[str] = []
+    errors: list[str] = []
+    for url in urls:
+        request = urllib.request.Request(url, headers={"User-Agent": "omarchy-clarity/0.2"})
+        try:
+            with urllib.request.urlopen(request, timeout=90) as response:
+                payload = response.read().decode("utf-8")
+            domains = parse_domain_lines(payload, hosts_format=True)
+            if not domains:
+                raise ValueError("source contained no valid domains")
+            merged.update(domains)
+            successful.append(url)
+        except Exception as error:
+            errors.append(f"{url}: {error}")
+    if errors:
+        print(f"clarity: warning: {label} source failures:\n  " + "\n  ".join(errors), file=sys.stderr)
+    if not successful:
+        fail(f"could not download any {label} blocklist source")
+    return sorted(merged), successful
+
+
+def update_lists(apply: bool = True) -> tuple[int, int]:
     config = read_json(CONFIG_FILE, {})
-    config["adultUpdated"] = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
+    adult_enabled = bool(config.get("adultBlockingEnabled", True))
+    if adult_enabled:
+        adult_domains, adult_sources = download_sources(ADULT_URLS, "adult")
+    else:
+        adult_domains, adult_sources = [], []
+    distraction_domains, distraction_sources = download_sources(DISTRACTION_URLS, "focus")
+    allowlist = read_domains(ALLOWLIST_FILE)
+    adult_domains = without_allowlisted(adult_domains, allowlist)
+    distraction_domains = without_allowlisted(distraction_domains, allowlist)
+    if adult_enabled and len(adult_domains) < MIN_ADULT_DOMAINS:
+        fail(f"downloaded adult blocklists contained only {len(adult_domains)} unique domains")
+    if len(distraction_domains) < MIN_DISTRACTION_DOMAINS:
+        fail(f"downloaded focus blocklists contained only {len(distraction_domains)} unique domains")
+
+    atomic_write(ADULT_FILE, ("\n".join(adult_domains) + "\n") if adult_domains else "", 0o644)
+    atomic_write(DISTRACTION_FEED_FILE, "\n".join(distraction_domains) + "\n", 0o644)
+    updated = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
+    config["adultUpdated"] = updated
+    config["listsUpdated"] = updated
+    config["adultSources"] = adult_sources
+    config["distractionSources"] = distraction_sources
     write_json(CONFIG_FILE, config)
     if apply and PASSWORD_FILE.exists():
         apply_hosts()
-    return len(domains)
+    return len(adult_domains), len(distraction_domains)
+
+
+def update_adult_list(apply: bool = True) -> int:
+    # Backward-compatible alias for v0.1 callers.
+    return update_lists(apply)[0]
 
 
 def run_systemctl(*args: str, check: bool = True) -> None:
@@ -356,42 +446,75 @@ def install_system_files(plugin_dir: Path, owner: str) -> None:
             fail(f"generated sudoers policy is invalid: {result.stderr.strip()}")
 
 
-def bootstrap(plugin_dir_arg: str, owner: str) -> None:
-    if PASSWORD_FILE.exists() or SUDOERS_FILE.exists():
-        fail("Clarity is already installed; uninstall it before installing again")
-    plugin_dir = Path(plugin_dir_arg).resolve()
+def sync_bundled_lists(plugin_dir: Path, merge_sites: bool) -> None:
     defaults = plugin_dir / "config" / "distractions.txt"
-    if not defaults.is_file():
-        fail("default distraction list is missing")
+    ai_allowlist = plugin_dir / "config" / "ai-allowlist.txt"
+    if not defaults.is_file() or not ai_allowlist.is_file():
+        fail("plugin blocklist configuration is incomplete")
+    default_domains = parse_domain_lines(defaults.read_text(encoding="utf-8"))
+    if merge_sites:
+        default_domains = sorted(set(default_domains) | set(read_domains(SITES_FILE)))
+    allow_domains = parse_domain_lines(ai_allowlist.read_text(encoding="utf-8"))
+    atomic_write(SITES_FILE, "\n".join(default_domains) + "\n", 0o644)
+    atomic_write(ALLOWLIST_FILE, "\n".join(allow_domains) + "\n", 0o644)
 
+
+def bootstrap(plugin_dir_arg: str, owner: str, adult_state: str) -> None:
+    if PASSWORD_FILE.exists() or SUDOERS_FILE.exists():
+        fail("Clarity is already installed; rerun install.sh to upgrade it")
+    if adult_state not in {"enabled", "disabled"}:
+        fail("permanent adult blocking must be enabled or disabled during setup")
+    plugin_dir = Path(plugin_dir_arg).resolve()
     password = read_password_from_stdin()
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     if HOSTS_FILE.exists() and not BACKUP_FILE.exists():
         shutil.copy2(HOSTS_FILE, BACKUP_FILE)
 
-    existing = read_json(CONFIG_FILE, {})
     config = {
-        "manualEnabled": bool(existing.get("manualEnabled", True)),
-        "scheduleEnabled": bool(existing.get("scheduleEnabled", False)),
-        "scheduleStart": str(existing.get("scheduleStart", "09:00")),
-        "scheduleEnd": str(existing.get("scheduleEnd", "17:00")),
-        "adultUpdated": str(existing.get("adultUpdated", "")),
+        "manualEnabled": True,
+        "scheduleEnabled": False,
+        "scheduleStart": "09:00",
+        "scheduleEnd": "17:00",
+        "adultBlockingEnabled": adult_state == "enabled",
+        "adultUpdated": "",
+        "listsUpdated": "",
         "owner": owner,
     }
-    parse_time(config["scheduleStart"])
-    parse_time(config["scheduleEnd"])
     write_json(CONFIG_FILE, config)
     write_json(PASSWORD_FILE, password_record(password), 0o600)
-    if not SITES_FILE.exists():
-        domains = parse_domain_lines(defaults.read_text(encoding="utf-8"))
-        atomic_write(SITES_FILE, "\n".join(domains) + "\n", 0o644)
+    sync_bundled_lists(plugin_dir, merge_sites=False)
 
-    count = update_adult_list(apply=False)
+    adult_count, focus_feed_count = update_lists(apply=False)
     install_system_files(plugin_dir, owner)
     apply_hosts()
     run_systemctl("daemon-reload")
     run_systemctl("enable", "--now", "clarity-reconcile.timer", "clarity-adult-list.timer")
-    print(f"Clarity installed. Permanently blocking {count} adult domains.")
+    permanent_summary = (
+        f"permanently blocking {adult_count} adult domains"
+        if adult_state == "enabled"
+        else "permanent adult blocking was skipped"
+    )
+    print(f"Clarity installed: {permanent_summary}; focus feeds contain {focus_feed_count} domains.")
+
+
+def upgrade(plugin_dir_arg: str) -> None:
+    if not PASSWORD_FILE.exists():
+        fail("Clarity is not installed")
+    plugin_dir = Path(plugin_dir_arg).resolve()
+    config = read_json(CONFIG_FILE)
+    owner = str(config.get("owner", ""))
+    sync_bundled_lists(plugin_dir, merge_sites=True)
+    adult_count, focus_feed_count = update_lists(apply=False)
+    install_system_files(plugin_dir, owner)
+    apply_hosts()
+    run_systemctl("daemon-reload")
+    run_systemctl("enable", "--now", "clarity-reconcile.timer", "clarity-adult-list.timer")
+    permanent_summary = (
+        f"permanently blocking {adult_count} adult domains"
+        if bool(config.get("adultBlockingEnabled", True))
+        else "permanent adult blocking remains skipped"
+    )
+    print(f"Clarity upgraded: {permanent_summary}; focus feeds contain {focus_feed_count} domains.")
 
 
 def status() -> dict:
@@ -408,9 +531,13 @@ def status() -> dict:
         "scheduleEnabled": bool(config.get("scheduleEnabled", False)),
         "scheduleStart": str(config.get("scheduleStart", "09:00")),
         "scheduleEnd": str(config.get("scheduleEnd", "17:00")),
-        "permanentCount": len(read_domains(ADULT_FILE)),
-        "distractionCount": len(read_domains(SITES_FILE)),
+        "permanentEnabled": bool(config.get("adultBlockingEnabled", True)),
+        "permanentCount": len(without_allowlisted(read_domains(ADULT_FILE), read_domains(ALLOWLIST_FILE))),
+        "distractionCount": len(effective_distraction_domains()),
+        "curatedCount": len(read_domains(SITES_FILE)),
+        "aiAllowCount": len(read_domains(ALLOWLIST_FILE)),
         "adultUpdated": str(config.get("adultUpdated", "")),
+        "listsUpdated": str(config.get("listsUpdated", config.get("adultUpdated", ""))),
         "reason": reason,
     }
 
@@ -489,7 +616,9 @@ def usage() -> str:
     return """Usage: clarity-root COMMAND [ARGS]
 
 Commands:
-  bootstrap PLUGIN_DIR OWNER      Install system integration; password on stdin
+  bootstrap PLUGIN_DIR OWNER ADULT_STATE
+                                  Install; adult state is enabled or disabled
+  upgrade PLUGIN_DIR              Upgrade feeds/config while preserving state
   status                          Print JSON state
   enable                          Enable distraction blocking
   disable                         Disable blocking; password on stdin
@@ -497,7 +626,8 @@ Commands:
   sites-list                      Print distraction domains
   sites-set                       Replace domains; password first on stdin
   reconcile                       Apply current/scheduled state
-  update-adult                    Refresh permanent adult blocklist
+  update-lists                    Refresh permanent and focus blocklists
+  update-adult                    Backward-compatible alias for update-lists
   uninstall                       Remove all Clarity system integration
 """
 
@@ -508,8 +638,10 @@ def main(argv: list[str]) -> int:
         print(usage(), end="")
         return 0
     command, *args = argv
-    if command == "bootstrap" and len(args) == 2:
-        bootstrap(args[0], args[1])
+    if command == "bootstrap" and len(args) == 3:
+        bootstrap(args[0], args[1], args[2])
+    elif command == "upgrade" and len(args) == 1:
+        upgrade(args[0])
     elif command == "status" and not args:
         print(json.dumps(status(), separators=(",", ":")))
     elif command == "enable" and not args:
@@ -530,8 +662,9 @@ def main(argv: list[str]) -> int:
     elif command == "reconcile" and not args:
         changed = apply_hosts()
         print("Clarity hosts updated." if changed else "Clarity hosts already current.")
-    elif command == "update-adult" and not args:
-        print(f"Updated permanent adult blocklist ({update_adult_list()} domains).")
+    elif command in {"update-lists", "update-adult"} and not args:
+        adult_count, focus_count = update_lists()
+        print(f"Updated blocklists ({adult_count} permanent, {focus_count} focus-feed domains).")
     elif command == "uninstall" and not args:
         uninstall()
     else:

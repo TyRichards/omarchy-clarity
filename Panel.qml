@@ -17,8 +17,10 @@ Panel {
   property bool scheduleEnabled: false
   property string scheduleStart: "09:00"
   property string scheduleEnd: "17:00"
+  property bool permanentEnabled: false
   property int permanentCount: 0
   property int distractionCount: 0
+  property int aiAllowCount: 0
   property string adultUpdated: ""
   property string reason: "Setup required"
   property string statusMessage: ""
@@ -62,8 +64,10 @@ Panel {
       scheduleEnabled = state.scheduleEnabled === true
       scheduleStart = String(state.scheduleStart || "09:00")
       scheduleEnd = String(state.scheduleEnd || "17:00")
+      permanentEnabled = state.permanentEnabled === true
       permanentCount = Number(state.permanentCount || 0)
       distractionCount = Number(state.distractionCount || 0)
+      aiAllowCount = Number(state.aiAllowCount || 0)
       adultUpdated = String(state.adultUpdated || "")
       reason = String(state.reason || "")
       if (!startField.activeFocus) startField.text = scheduleStart
@@ -331,7 +335,7 @@ Panel {
         Button {
           visible: !root.installed
           width: parent.width
-          text: "Install Clarity"
+          text: "Enable Clarity"
           iconText: "󰏔"
           bordered: true
           foreground: root.bar.foreground
@@ -361,7 +365,7 @@ Panel {
 
             Text {
               id: permanentIcon
-              text: "󰌾"
+              text: root.permanentEnabled ? "󰌾" : "󰚌"
               color: root.bar.foreground
               font.family: root.bar.fontFamily
               font.pixelSize: Style.font.subtitle
@@ -378,7 +382,7 @@ Panel {
 
               Text {
                 width: parent.width
-                text: "Permanent protection"
+                text: root.permanentEnabled ? "Permanent protection" : "Permanent blacklist skipped"
                 color: root.bar.foreground
                 font.family: root.bar.fontFamily
                 font.pixelSize: Style.font.body
@@ -386,7 +390,9 @@ Panel {
               }
               Text {
                 width: parent.width
-                text: root.compactNumber(root.permanentCount) + " adult domains blocked · always on"
+                text: root.permanentEnabled
+                  ? root.compactNumber(root.permanentCount) + " adult domains · merged feeds · always on"
+                  : "Opted out during first setup"
                 color: Qt.darker(root.bar.foreground, 1.5)
                 font.family: root.bar.fontFamily
                 font.pixelSize: Style.font.caption
@@ -507,7 +513,8 @@ Panel {
               }
               Text {
                 width: parent.width
-                text: root.distractionCount + " configured domains"
+                text: root.compactNumber(root.distractionCount) + " output killers · "
+                  + root.aiAllowCount + " AI domains protected"
                 color: Qt.darker(root.bar.foreground, 1.5)
                 font.family: root.bar.fontFamily
                 font.pixelSize: Style.font.caption

@@ -25,18 +25,26 @@ class ClarityRootTests(unittest.TestCase):
         )
         adult = self.root / "adult-hosts"
         adult.write_text(
-            "127.0.0.1 localhost\n0.0.0.0 adult-one.test\n0.0.0.0 adult-two.test\n0.0.0.0 adult-three.test\n",
+            "127.0.0.1 localhost\n0.0.0.0 adult-one.test\n0.0.0.0 adult-two.test\n"
+            "0.0.0.0 adult-three.test\n0.0.0.0 openai.com\n",
+            encoding="utf-8",
+        )
+        focus = self.root / "focus-hosts"
+        focus.write_text(
+            "social-one.test\nsocial-two.test\nsocial-three.test\nchatgpt.com\nclaude.ai\n",
             encoding="utf-8",
         )
         self.env = os.environ.copy()
         self.env.update(
             {
                 "CLARITY_TEST_ROOT": str(self.root),
-                "CLARITY_ADULT_URL": adult.as_uri(),
+                "CLARITY_ADULT_URLS": adult.as_uri(),
+                "CLARITY_DISTRACTION_URLS": focus.as_uri(),
                 "CLARITY_MIN_ADULT_DOMAINS": "3",
+                "CLARITY_MIN_DISTRACTION_DOMAINS": "3",
             }
         )
-        result = self.run_helper("bootstrap", str(PLUGIN_DIR), "testuser", input=PASSWORD + "\n")
+        result = self.run_helper("bootstrap", str(PLUGIN_DIR), "testuser", "enabled", input=PASSWORD + "\n")
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def tearDown(self):
@@ -67,6 +75,28 @@ class ClarityRootTests(unittest.TestCase):
         self.assertIn("# BEGIN CLARITY DISTRACTIONS", hosts)
         self.assertIn("192.0.2.10 keep.example.test", hosts)
 
+    def test_ai_sites_are_removed_from_every_downloaded_feed(self):
+        hosts = (self.root / "etc/hosts").read_text(encoding="utf-8")
+        self.assertNotIn("openai.com", hosts)
+        self.assertNotIn("chatgpt.com", hosts)
+        self.assertNotIn("claude.ai", hosts)
+        self.assertIn("social-one.test", hosts)
+
+    def test_setup_can_opt_out_of_permanent_adult_blocking(self):
+        result = self.run_helper("uninstall")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.env["CLARITY_ADULT_URLS"] = (self.root / "does-not-exist").as_uri()
+        result = self.run_helper(
+            "bootstrap", str(PLUGIN_DIR), "testuser", "disabled", input=PASSWORD + "\n"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        state = self.status()
+        self.assertFalse(state["permanentEnabled"])
+        self.assertEqual(state["permanentCount"], 0)
+        hosts = (self.root / "etc/hosts").read_text(encoding="utf-8")
+        self.assertNotIn("# BEGIN CLARITY PERMANENT", hosts)
+        self.assertIn("# BEGIN CLARITY DISTRACTIONS", hosts)
+
     def test_wrong_password_cannot_disable(self):
         result = self.run_helper("disable", input="wrong-password\n")
         self.assertNotEqual(result.returncode, 0)
@@ -96,6 +126,17 @@ class ClarityRootTests(unittest.TestCase):
         result = self.run_helper("sites-set", input=PASSWORD + "\n# nothing\n")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("may not be empty", result.stderr)
+
+    def test_upgrade_preserves_custom_sites_and_setup_choice(self):
+        result = self.run_helper("sites-set", input=PASSWORD + "\ncustom-focus.test\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.run_helper("upgrade", str(PLUGIN_DIR))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        state = self.status()
+        self.assertTrue(state["permanentEnabled"])
+        sites = (self.root / "var/lib/clarity/distractions.txt").read_text(encoding="utf-8")
+        self.assertIn("custom-focus.test", sites)
+        self.assertIn("youtube.com", sites)
 
     def test_uninstall_removes_only_managed_sections(self):
         result = self.run_helper("uninstall")
