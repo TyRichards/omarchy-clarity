@@ -33,9 +33,9 @@ Panel {
   readonly property string cli: localPath(Qt.resolvedUrl("bin/clarityctl"))
   readonly property string installScript: localPath(Qt.resolvedUrl("install.sh"))
   readonly property string icon: root.clarityActive ? "󰌵" : "󰛑"
-  readonly property string heroTitle: root.installed ? "Clarity" : "Clarity setup"
+  readonly property string heroTitle: root.installed ? "Clarity" : "Clarity Setup"
   readonly property string heroMeta: {
-    if (!root.installed) return "Enable to Begin"
+    if (!root.installed) return "ACTIVATE TO BEGIN"
     if (root.clarityActive) return "DISTRACTIONS BLOCKED"
     return "SOCIAL WINDOW OPEN"
   }
@@ -107,7 +107,11 @@ Panel {
   }
 
   function toggleClarity() {
-    if (!installed || busy) return
+    if (busy) return
+    if (!installed) {
+      launchInstaller()
+      return
+    }
     if (clarityActive) requestPassword("disable")
     else if (scheduleEnabled) statusMessage = "The daily schedule controls Clarity right now."
     else runAction(["on"])
@@ -279,8 +283,8 @@ Panel {
 
           ToggleSwitch {
             id: claritySwitch
-            visible: root.installed
-            checked: root.clarityActive
+            visible: true
+            checked: root.installed ? root.clarityActive : false
             busy: root.busy
             hasCursor: root.cursorActive && root.focusSection === "header"
             foreground: root.bar.foreground
@@ -295,7 +299,9 @@ Panel {
 
             PanelToolTip {
               visible: claritySwitch.containsMouse
-              text: root.clarityActive ? "Clarity password required to turn off" : "Turn Clarity on"
+              text: !root.installed
+                ? "Activate Clarity"
+                : root.clarityActive ? "Clarity password required to turn off" : "Turn Clarity on"
               fontFamily: root.bar.fontFamily
             }
           }
@@ -335,7 +341,7 @@ Panel {
         Button {
           visible: !root.installed
           width: parent.width
-          text: "Enable Clarity"
+          text: "ACTIVATE"
           iconText: "󰐥"
           bordered: true
           foreground: root.bar.foreground
@@ -344,7 +350,9 @@ Panel {
         }
 
         Column {
-          visible: root.installed
+          visible: true
+          enabled: root.installed
+          opacity: root.installed ? 1.0 : 0.35
           width: parent.width
           spacing: Style.space(8)
 
@@ -382,7 +390,9 @@ Panel {
 
               Text {
                 width: parent.width
-                text: root.permanentEnabled ? "Permanent protection" : "Permanent blacklist skipped"
+                text: !root.installed
+                  ? "Permanent protection"
+                  : root.permanentEnabled ? "Permanent protection" : "Permanent blacklist skipped"
                 color: root.bar.foreground
                 font.family: root.bar.fontFamily
                 font.pixelSize: Style.font.body
@@ -390,9 +400,11 @@ Panel {
               }
               Text {
                 width: parent.width
-                text: root.permanentEnabled
-                  ? root.compactNumber(root.permanentCount) + " adult domains · merged feeds · always on"
-                  : "Opted out during first setup"
+                text: !root.installed
+                  ? "Adult-domain blocking setup choice"
+                  : root.permanentEnabled
+                    ? root.compactNumber(root.permanentCount) + " adult domains · merged feeds · always on"
+                    : "Opted out during first setup"
                 color: Qt.darker(root.bar.foreground, 1.5)
                 font.family: root.bar.fontFamily
                 font.pixelSize: Style.font.caption
@@ -513,8 +525,10 @@ Panel {
               }
               Text {
                 width: parent.width
-                text: root.compactNumber(root.distractionCount) + " output killers · "
-                  + root.aiAllowCount + " AI domains protected"
+                text: !root.installed
+                  ? "Massive output-killer feeds · AI tools protected"
+                  : root.compactNumber(root.distractionCount) + " output killers · "
+                    + root.aiAllowCount + " AI domains protected"
                 color: Qt.darker(root.bar.foreground, 1.5)
                 font.family: root.bar.fontFamily
                 font.pixelSize: Style.font.caption
