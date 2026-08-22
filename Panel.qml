@@ -35,7 +35,7 @@ Panel {
   readonly property string icon: root.clarityActive ? "󰌵" : "󰛑"
   readonly property string heroTitle: root.installed ? "Clarity" : "Clarity setup"
   readonly property string heroMeta: {
-    if (!root.installed) return "INSTALL TO BEGIN"
+    if (!root.installed) return "ENABLE TO BEGIN"
     if (root.clarityActive) return "DISTRACTIONS BLOCKED"
     return "SOCIAL WINDOW OPEN"
   }
