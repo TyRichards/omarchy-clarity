@@ -336,7 +336,7 @@ Panel {
           visible: !root.installed
           width: parent.width
           text: "Enable Clarity"
-          iconText: "󰏔"
+          iconText: "󰐥"
           bordered: true
           foreground: root.bar.foreground
           fontFamily: root.bar.fontFamily
