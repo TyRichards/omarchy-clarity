@@ -28,9 +28,32 @@ fi
 
 cat <<'INTRO'
 
-Clarity setup
+                         ◯
+   ______ __      ___    ____  ____ ________  __
+  / ____// /     /   |  / __ \/  _//_  __/\ \/ /
+ / /    / /     / /| | / /_/ // /   / /    \  /
+/ /___ / /___  / ___ |/ _, _// /   / /     / /
+\____//_____/ /_/  |_/_/ |_/___/  /_/     /_/
+
+CLARITY SETUP
 ─────────────
-Clarity will:
+Get focused. Be productive. Get Clarity.
+
+Clarity does 2 things:
+
+1. TURN DISTRACTIONS ON & OFF
+   Toggle on/off or schedule access to distracting websites. (i.e. Social
+   Media that scrolls infinitely). You must have a unique Clarity Password
+   to manually toggle the switch off. You can specify which sites this
+   includes after setup.
+
+2. BLOCK ADULT SITES (Optional)
+   The permanent adult blacklist is a one-time setup choice. If enabled, it
+   is never affected by the Clarity toggle or schedule and remains until
+   uninstall. If you opt out, you can also simply add adult sites to the
+   regular "distractions" list to toggle on/off normally with others.
+
+OTHER THINGS TO KNOW:
   • add root-owned sections to /etc/hosts;
   • permanently merge three massive, maintained adult-domain feeds;
   • aggressively block social, video, shopping, gambling, torrent, news,
@@ -39,28 +62,36 @@ Clarity will:
   • start with the distraction block enabled;
   • install minute-by-minute schedule reconciliation and weekly list updates.
 
+─────────────
+
+SET YOUR CLARITY PASSWORD
+
+Choose a NEW Clarity password (not your Linux login password).
+It is required to turn Clarity off or alter its schedule/site list.
+
 The permanent adult blacklist is a one-time setup choice. If enabled, it is
 never affected by the Clarity toggle or schedule and remains until uninstall.
 
-Choose a NEW Clarity password—not your Linux login password.
-It is required to turn Clarity off or alter its schedule/site list.
 INTRO
 
 if command -v gum >/dev/null 2>&1; then
   adult_choice=$(printf '%s\n' \
-    "Enable permanent adult blacklist (recommended)" \
-    "Skip permanent adult blacklist" |
-    gum choose --header "Permanent adult-site blocking cannot be toggled later:") || exit 130
+    "Yes, enable permanent adult blacklist" \
+    "Skip permanent blacklist (Add to distractions later)" |
+    gum choose) || exit 130
 else
   while true; do
-    read -r -p "Enable permanent adult blacklist until uninstall? [y/n]: " answer
+    printf '%s\n' \
+      "> Yes, enable permanent adult blacklist" \
+      "  Skip permanent blacklist (Add to distractions later)"
+    read -r -p "Choose permanent blacklist option [yes/skip]: " answer
     case ${answer,,} in
-    y | yes) adult_choice="Enable permanent adult blacklist (recommended)"; break ;;
-    n | no) adult_choice="Skip permanent adult blacklist"; break ;;
+    y | yes) adult_choice="Yes, enable permanent adult blacklist"; break ;;
+    n | no | s | skip) adult_choice="Skip permanent blacklist (Add to distractions later)"; break ;;
     esac
   done
 fi
-if [[ $adult_choice == Enable* ]]; then
+if [[ $adult_choice == Yes,* ]]; then
   adult_state=enabled
 else
   adult_state=disabled
