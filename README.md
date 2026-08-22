@@ -74,7 +74,7 @@ omarchy plugin add https://github.com/TyRichards/omarchy-clarity.git --enable
 ~/.config/omarchy/plugins/io.github.tyrichards.clarity/install.sh
 ```
 
-Alternatively, open the newly added panel and press **Enable Clarity**.
+Alternatively, open the newly added panel and press **ACTIVATE**. Setup opens in a native Omarchy-themed 1:1 presentation pane with a single Clarity wordmark—no extra Omarchy splash screen.
 
 The installer will:
 

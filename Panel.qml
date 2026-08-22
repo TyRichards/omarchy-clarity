@@ -31,7 +31,7 @@ Panel {
 
   readonly property bool busy: actionProc.running
   readonly property string cli: localPath(Qt.resolvedUrl("bin/clarityctl"))
-  readonly property string installScript: localPath(Qt.resolvedUrl("install.sh"))
+  readonly property string setupLauncher: localPath(Qt.resolvedUrl("bin/clarity-setup"))
   readonly property string icon: root.clarityActive ? "󰌵" : "󰛑"
   readonly property string heroTitle: root.installed ? "Clarity" : "Clarity Setup"
   readonly property string heroMeta: {
@@ -144,7 +144,7 @@ Panel {
 
   function launchInstaller() {
     root.close()
-    Quickshell.execDetached(["omarchy-launch-floating-terminal-with-presentation", root.installScript])
+    Quickshell.execDetached([root.setupLauncher])
   }
 
   function editSites() {

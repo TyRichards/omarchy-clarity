@@ -10,10 +10,41 @@ fail() {
   exit 1
 }
 
+show_clarity_logo() {
+  local color=${GUM_CHOOSE_ITEM_FOREGROUND:-}
+  local hex red green blue
+  if [[ $color =~ ^#[[:xdigit:]]{6}$ ]]; then
+    hex=${color#\#}
+    red=$((16#${hex:0:2}))
+    green=$((16#${hex:2:2}))
+    blue=$((16#${hex:4:2}))
+    printf '\033[38;2;%d;%d;%dm' "$red" "$green" "$blue"
+  else
+    printf '\033[39m'
+  fi
+  cat <<'LOGO'
+ ▄████████  ▄█          ▄████████    ▄████████  ▄█      ███     ▄██   ▄
+███    ███ ███         ███    ███   ███    ███ ███  ▀█████████▄ ███   ██▄
+███    █▀  ███         ███    ███   ███    ███ ███▌    ▀███▀▀██ ███▄▄▄███
+███        ███         ███    ███  ▄███▄▄▄▄██▀ ███▌     ███   ▀ ▀▀▀▀▀▀███
+███        ███       ▀███████████ ▀▀███▀▀▀▀▀   ███▌     ███     ▄██   ███
+███    █▄  ███         ███    ███ ▀███████████ ███      ███     ███   ███
+███    ███ ███▌    ▄   ███    ███   ███    ███ ███      ███     ███   ███
+████████▀  █████▄▄██   ███    █▀    ███    ███ █▀      ▄████▀    ▀█████▀
+           ▀                        ███    ███
+LOGO
+  printf '\033[0m\n'
+}
+
 [[ -t 0 && -t 1 ]] || fail "run this installer in an interactive terminal"
 for command in python3 sudo systemctl resolvectl; do
   command -v "$command" >/dev/null || fail "required command not found: $command"
 done
+
+if command -v omarchy-restart-gum >/dev/null 2>&1; then
+  # shellcheck disable=SC1091
+  source omarchy-restart-gum
+fi
 
 if [[ -x $ROOT_HELPER ]]; then
   printf 'Upgrading Clarity blocklists and system integration…\n'
@@ -26,15 +57,9 @@ if [[ -x $ROOT_HELPER ]]; then
   exit 0
 fi
 
+show_clarity_logo
+
 cat <<'INTRO'
-
-                         ◯
-   ______ __      ___    ____  ____ ________  __
-  / ____// /     /   |  / __ \/  _//_  __/\ \/ /
- / /    / /     / /| | / /_/ // /   / /    \  /
-/ /___ / /___  / ___ |/ _, _// /   / /     / /
-\____//_____/ /_/  |_/_/ |_/___/  /_/     /_/
-
 CLARITY SETUP
 ─────────────
 Get focused. Be productive. Get Clarity.

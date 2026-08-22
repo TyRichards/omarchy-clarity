@@ -1,0 +1,79 @@
+#!/bin/bash
+set -euo pipefail
+
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+PLUGIN_DIR=$(cd -- "$SCRIPT_DIR/.." && pwd)
+INSTALL_SCRIPT="$PLUGIN_DIR/install.sh"
+WINDOW_TITLE="Clarity Setup"
+
+run_session() {
+  clear
+  set +e
+  "$INSTALL_SCRIPT"
+  status=$?
+  set -e
+
+  if ((status != 130)); then
+    echo
+    if command -v gum >/dev/null 2>&1; then
+      gum spin --spinner globe --title "Done! Press any key to close..." -- bash -c 'read -n 1 -s'
+    else
+      read -r -n 1 -s -p "Done! Press any key to close..." || true
+      echo
+    fi
+  fi
+  return "$status"
+}
+
+if [[ ${1:-} == "--session" ]]; then
+  run_session
+  exit $?
+fi
+
+for command in hyprctl jq uwsm-app xdg-terminal-exec; do
+  command -v "$command" >/dev/null || {
+    echo "clarity setup: required command not found: $command" >&2
+    exit 1
+  }
+done
+
+# Refresh Gum's palette so setup follows the current Omarchy theme.
+if command -v omarchy-restart-gum >/dev/null 2>&1; then
+  # shellcheck disable=SC1091
+  source omarchy-restart-gum
+fi
+
+mapfile -t existing_addresses < <(hyprctl clients -j | jq -r '.[].address')
+setsid uwsm-app -- xdg-terminal-exec \
+  --app-id=org.omarchy.terminal \
+  --title="$WINDOW_TITLE" \
+  -e "$0" --session &
+terminal_job=$!
+
+address=""
+for _ in {1..80}; do
+  while IFS= read -r candidate; do
+    known=false
+    for existing in "${existing_addresses[@]}"; do
+      if [[ $candidate == "$existing" ]]; then
+        known=true
+        break
+      fi
+    done
+    if [[ $known == false ]]; then
+      address=$candidate
+      break
+    fi
+  done < <(hyprctl clients -j | jq -r --arg title "$WINDOW_TITLE" '.[] | select(.title == $title) | .address')
+  [[ -n $address ]] && break
+  sleep 0.05
+done
+
+if [[ -n $address ]]; then
+  # Omarchy's standard presentation pane is 875px wide. Make it the same size
+  # in both dimensions, matching the native 1:1 single-window aspect.
+  hyprctl dispatch "hl.dsp.window.resize({ x = 875, y = 875, window = \"address:$address\" })" >/dev/null
+  hyprctl dispatch "hl.dsp.window.center({ window = \"address:$address\" })" >/dev/null
+fi
+
+wait "$terminal_job" || true
