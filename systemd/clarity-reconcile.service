@@ -1,0 +1,7 @@
+[Unit]
+Description=Reconcile Clarity site blocking
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/clarity/clarity-root reconcile

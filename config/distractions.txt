@@ -1,0 +1,60 @@
+# Clarity's default distraction list.
+# One exact hostname per line. The helper also adds www. and m. variants.
+# Edit the installed list with: clarityctl sites edit
+
+# Reddit
+reddit.com
+redd.it
+redditstatic.com
+redditmedia.com
+
+# YouTube
+youtube.com
+youtu.be
+googlevideo.com
+ytimg.com
+youtube-nocookie.com
+
+# Instagram / Threads
+instagram.com
+cdninstagram.com
+threads.net
+
+# Facebook
+facebook.com
+fb.com
+fbcdn.net
+messenger.com
+
+# X / Twitter
+x.com
+twitter.com
+t.co
+twimg.com
+
+# TikTok
+tiktok.com
+tiktokcdn.com
+tiktokv.com
+musical.ly
+
+# Twitch
+twitch.tv
+twitchcdn.net
+twitchsvc.net
+
+# Discord
+discord.com
+discord.gg
+discordapp.com
+discordapp.net
+
+# Other high-scroll social platforms
+linkedin.com
+pinterest.com
+pinimg.com
+snapchat.com
+sc-cdn.net
+tumblr.com
+imgur.com
+9gag.com

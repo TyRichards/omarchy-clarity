@@ -1,0 +1,132 @@
+#!/bin/bash
+set -euo pipefail
+
+ROOT_HELPER=/usr/local/lib/clarity/clarity-root
+
+fail() {
+  echo "clarityctl: $*" >&2
+  exit 1
+}
+
+installed() {
+  [[ -x $ROOT_HELPER ]]
+}
+
+run_root() {
+  installed || fail "Clarity system integration is not installed; run install.sh first"
+  sudo -n "$ROOT_HELPER" "$@"
+}
+
+read_clarity_password() {
+  local prompt="${1:-Clarity password: }"
+  local password
+  if command -v gum >/dev/null 2>&1 && [[ -t 0 && -t 1 ]]; then
+    password=$(gum input --password --prompt "$prompt") || exit 130
+  else
+    read -r -s -p "$prompt" password
+    printf '\n' >&2
+  fi
+  printf '%s' "$password"
+}
+
+protected_command() {
+  local password
+  password=$(read_clarity_password)
+  printf '%s\n' "$password" | run_root "$@"
+}
+
+usage() {
+  cat <<'USAGE'
+Usage: clarityctl COMMAND
+
+Commands:
+  status                         Print JSON state
+  on                             Enable distraction blocking
+  off [--password-stdin]         Disable with the Clarity password
+  schedule STATE START END       Enable/disable a daily HH:MM window
+  sites list                     Print the distracting-domain list
+  sites edit                     Edit the list, guarded by the password
+  update-adult                   Refresh the permanent adult blocklist
+  reconcile                      Re-apply current state
+  uninstall                      Remove system integration (v1: no password)
+USAGE
+}
+
+command=${1:-help}
+shift || true
+
+case "$command" in
+help | -h | --help)
+  usage
+  ;;
+status)
+  (($# == 0)) || fail "status takes no arguments"
+  run_root status
+  ;;
+on | enable)
+  (($# == 0)) || fail "on takes no arguments"
+  run_root enable
+  ;;
+off | disable)
+  if [[ ${1:-} == --password-stdin ]]; then
+    shift
+    (($# == 0)) || fail "unexpected arguments"
+    run_root disable
+  else
+    (($# == 0)) || fail "unexpected arguments"
+    protected_command disable
+  fi
+  ;;
+schedule)
+  state=${1:-}
+  start=${2:-}
+  end=${3:-}
+  shift $(( $# >= 3 ? 3 : $# ))
+  [[ $state == enabled || $state == disabled ]] || fail "schedule state must be enabled or disabled"
+  [[ -n $start && -n $end ]] || fail "schedule requires START and END in HH:MM"
+  if [[ ${1:-} == --password-stdin ]]; then
+    shift
+    (($# == 0)) || fail "unexpected arguments"
+    run_root schedule-set "$state" "$start" "$end"
+  else
+    (($# == 0)) || fail "unexpected arguments"
+    protected_command schedule-set "$state" "$start" "$end"
+  fi
+  ;;
+sites)
+  subcommand=${1:-}
+  shift || true
+  case "$subcommand" in
+  list)
+    (($# == 0)) || fail "sites list takes no arguments"
+    run_root sites-list
+    ;;
+  edit)
+    (($# == 0)) || fail "sites edit takes no arguments"
+    tmp=$(mktemp)
+    trap 'rm -f "$tmp"' EXIT
+    run_root sites-list >"$tmp"
+    editor=${VISUAL:-${EDITOR:-nano}}
+    "$editor" "$tmp"
+    password=$(read_clarity_password "Save with Clarity password: ")
+    { printf '%s\n' "$password"; cat "$tmp"; } | run_root sites-set
+    ;;
+  *) fail "sites requires list or edit" ;;
+  esac
+  ;;
+update-adult)
+  (($# == 0)) || fail "update-adult takes no arguments"
+  run_root update-adult
+  ;;
+reconcile)
+  (($# == 0)) || fail "reconcile takes no arguments"
+  run_root reconcile
+  ;;
+uninstall)
+  (($# == 0)) || fail "uninstall takes no arguments"
+  run_root uninstall
+  ;;
+*)
+  fail "unknown command '$command' (try --help)"
+  ;;
+esac

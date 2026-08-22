@@ -1,0 +1,550 @@
+#!/usr/bin/env python3
+"""Privileged state and /etc/hosts manager for Clarity."""
+
+from __future__ import annotations
+
+import base64
+import datetime as dt
+import getpass
+import hashlib
+import hmac
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+import urllib.request
+
+APP = "clarity"
+ADULT_URL = os.environ.get(
+    "CLARITY_ADULT_URL",
+    "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/porn-only/hosts",
+)
+MIN_ADULT_DOMAINS = int(os.environ.get("CLARITY_MIN_ADULT_DOMAINS", "1000"))
+TEST_ROOT = os.environ.get("CLARITY_TEST_ROOT", "")
+
+
+def rooted(path: str) -> Path:
+    if not TEST_ROOT:
+        return Path(path)
+    return Path(TEST_ROOT) / path.lstrip("/")
+
+
+STATE_DIR = rooted("/var/lib/clarity")
+CONFIG_FILE = STATE_DIR / "config.json"
+PASSWORD_FILE = STATE_DIR / "password.json"
+ADULT_FILE = STATE_DIR / "adult-domains.txt"
+SITES_FILE = STATE_DIR / "distractions.txt"
+BACKUP_FILE = STATE_DIR / "hosts.pre-clarity"
+HOSTS_FILE = rooted("/etc/hosts")
+ROOT_HELPER = rooted("/usr/local/lib/clarity/clarity-root")
+SUDOERS_FILE = rooted("/etc/sudoers.d/clarity")
+SYSTEMD_DIR = rooted("/etc/systemd/system")
+
+PERMANENT_BEGIN = "# BEGIN CLARITY PERMANENT — managed; do not edit"
+PERMANENT_END = "# END CLARITY PERMANENT"
+DISTRACTIONS_BEGIN = "# BEGIN CLARITY DISTRACTIONS — managed; do not edit"
+DISTRACTIONS_END = "# END CLARITY DISTRACTIONS"
+ALL_MARKERS = {
+    PERMANENT_BEGIN: PERMANENT_END,
+    DISTRACTIONS_BEGIN: DISTRACTIONS_END,
+}
+
+DOMAIN_RE = re.compile(
+    r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+)
+TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+USER_RE = re.compile(r"^[a-z_][a-z0-9_-]*[$]?$", re.IGNORECASE)
+
+
+class ClarityError(RuntimeError):
+    pass
+
+
+def fail(message: str) -> "None":
+    raise ClarityError(message)
+
+
+def require_root() -> None:
+    if not TEST_ROOT and os.geteuid() != 0:
+        fail("this command must run as root")
+
+
+def atomic_write(path: Path, content: str, mode: int = 0o644) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def write_json(path: Path, value: dict, mode: int = 0o644) -> None:
+    atomic_write(path, json.dumps(value, indent=2, sort_keys=True) + "\n", mode)
+
+
+def read_json(path: Path, default: dict | None = None) -> dict:
+    if not path.exists():
+        if default is not None:
+            return default.copy()
+        fail(f"Clarity is not installed ({path} is missing)")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        fail(f"cannot read {path}: {error}")
+    if not isinstance(value, dict):
+        fail(f"invalid Clarity state in {path}")
+    return value
+
+
+def normalize_domain(raw: str, strict: bool = True) -> str | None:
+    value = raw.strip().lower().rstrip(".")
+    if not value or value.startswith("#"):
+        return None
+    if "://" in value:
+        value = value.split("://", 1)[1].split("/", 1)[0]
+    value = value.split("#", 1)[0].strip()
+    if value.startswith("*."):
+        value = value[2:]
+    if ":" in value:
+        value = value.rsplit(":", 1)[0]
+    try:
+        value = value.encode("idna").decode("ascii")
+    except UnicodeError:
+        if strict:
+            fail(f"invalid domain: {raw.strip()}")
+        return None
+    if not DOMAIN_RE.fullmatch(value):
+        if strict:
+            fail(f"invalid domain: {raw.strip()}")
+        return None
+    return value
+
+
+def parse_domain_lines(text: str, hosts_format: bool = False) -> list[str]:
+    domains: set[str] = set()
+    for raw_line in text.splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        tokens = line.split()
+        candidates = tokens
+        if hosts_format and tokens and (
+            tokens[0] in {"0", "0.0.0.0", "127.0.0.1", "::", "::1"}
+            or re.fullmatch(r"[0-9a-f:.]+", tokens[0], re.IGNORECASE)
+        ):
+            candidates = tokens[1:]
+        for candidate in candidates:
+            if candidate.lower().rstrip(".") in {"localhost", "localhost.localdomain", "broadcasthost"}:
+                continue
+            domain = normalize_domain(candidate, strict=not hosts_format)
+            if domain:
+                domains.add(domain)
+    return sorted(domains)
+
+
+def read_domains(path: Path) -> list[str]:
+    if not path.exists():
+        return []
+    return parse_domain_lines(path.read_text(encoding="utf-8"))
+
+
+def expanded_distraction_domains(domains: list[str]) -> list[str]:
+    expanded: set[str] = set()
+    for domain in domains:
+        expanded.add(domain)
+        if not domain.startswith("www."):
+            expanded.add(f"www.{domain}")
+        if not domain.startswith("m."):
+            expanded.add(f"m.{domain}")
+    return sorted(expanded)
+
+
+def strip_managed_sections(text: str) -> str:
+    output: list[str] = []
+    expected_end: str | None = None
+    for line in text.splitlines():
+        if expected_end is not None:
+            if line == expected_end:
+                expected_end = None
+            continue
+        if line in ALL_MARKERS:
+            expected_end = ALL_MARKERS[line]
+            continue
+        output.append(line)
+    if expected_end is not None:
+        fail(f"refusing to rewrite {HOSTS_FILE}: unterminated Clarity section")
+    while output and output[-1] == "":
+        output.pop()
+    return "\n".join(output)
+
+
+def render_section(begin: str, end: str, domains: list[str]) -> str:
+    lines = [begin]
+    lines.extend(f"0.0.0.0 {domain}" for domain in domains)
+    lines.append(end)
+    return "\n".join(lines)
+
+
+def parse_time(value: str) -> tuple[int, int]:
+    if not TIME_RE.fullmatch(value):
+        fail(f"invalid time '{value}'; expected HH:MM")
+    hour, minute = value.split(":")
+    return int(hour), int(minute)
+
+
+def inside_schedule(config: dict, now: dt.datetime | None = None) -> bool:
+    current = now or dt.datetime.now().astimezone()
+    start_hour, start_minute = parse_time(str(config.get("scheduleStart", "09:00")))
+    end_hour, end_minute = parse_time(str(config.get("scheduleEnd", "17:00")))
+    current_minutes = current.hour * 60 + current.minute
+    start = start_hour * 60 + start_minute
+    end = end_hour * 60 + end_minute
+    if start == end:
+        return True
+    if start < end:
+        return start <= current_minutes < end
+    return current_minutes >= start or current_minutes < end
+
+
+def effective_active(config: dict, now: dt.datetime | None = None) -> bool:
+    if bool(config.get("scheduleEnabled", False)):
+        return inside_schedule(config, now)
+    return bool(config.get("manualEnabled", True))
+
+
+def apply_hosts() -> bool:
+    config = read_json(CONFIG_FILE)
+    adult_domains = read_domains(ADULT_FILE)
+    if len(adult_domains) < MIN_ADULT_DOMAINS:
+        fail("permanent adult blocklist is missing or unexpectedly small")
+    distraction_domains = expanded_distraction_domains(read_domains(SITES_FILE))
+    original = HOSTS_FILE.read_text(encoding="utf-8") if HOSTS_FILE.exists() else ""
+    base = strip_managed_sections(original)
+    parts = [base] if base else []
+    parts.append(render_section(PERMANENT_BEGIN, PERMANENT_END, adult_domains))
+    if effective_active(config):
+        parts.append(render_section(DISTRACTIONS_BEGIN, DISTRACTIONS_END, distraction_domains))
+    content = "\n\n".join(parts) + "\n"
+    if content == original:
+        return False
+
+    previous_stat = HOSTS_FILE.stat() if HOSTS_FILE.exists() else None
+    atomic_write(HOSTS_FILE, content, stat.S_IMODE(previous_stat.st_mode) if previous_stat else 0o644)
+    if previous_stat and not TEST_ROOT:
+        os.chown(HOSTS_FILE, previous_stat.st_uid, previous_stat.st_gid)
+    flush_dns()
+    return True
+
+
+def flush_dns() -> None:
+    if TEST_ROOT:
+        return
+    subprocess.run(["resolvectl", "flush-caches"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def password_record(password: str) -> dict:
+    if len(password) < 10:
+        fail("Clarity password must be at least 10 characters")
+    salt = os.urandom(16)
+    digest = hashlib.scrypt(
+        password.encode("utf-8"), salt=salt, n=2**15, r=8, p=1, dklen=32, maxmem=64 * 1024 * 1024
+    )
+    return {
+        "algorithm": "scrypt",
+        "n": 2**15,
+        "r": 8,
+        "p": 1,
+        "salt": base64.b64encode(salt).decode("ascii"),
+        "digest": base64.b64encode(digest).decode("ascii"),
+    }
+
+
+def verify_password(password: str) -> None:
+    record = read_json(PASSWORD_FILE)
+    try:
+        salt = base64.b64decode(record["salt"], validate=True)
+        expected = base64.b64decode(record["digest"], validate=True)
+        actual = hashlib.scrypt(
+            password.encode("utf-8"),
+            salt=salt,
+            n=int(record["n"]),
+            r=int(record["r"]),
+            p=int(record["p"]),
+            dklen=len(expected),
+            maxmem=64 * 1024 * 1024,
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        fail(f"invalid password record: {error}")
+    if not hmac.compare_digest(actual, expected):
+        fail("incorrect Clarity password")
+
+
+def read_password_from_stdin() -> str:
+    password = sys.stdin.readline()
+    if password == "":
+        fail("Clarity password was not provided")
+    return password.rstrip("\r\n")
+
+
+def update_adult_list(apply: bool = True) -> int:
+    request = urllib.request.Request(ADULT_URL, headers={"User-Agent": "omarchy-clarity/0.1"})
+    try:
+        with urllib.request.urlopen(request, timeout=45) as response:
+            payload = response.read().decode("utf-8")
+    except Exception as error:
+        fail(f"could not download the permanent adult blocklist: {error}")
+    domains = parse_domain_lines(payload, hosts_format=True)
+    if len(domains) < MIN_ADULT_DOMAINS:
+        fail(f"downloaded adult blocklist contained only {len(domains)} domains")
+    atomic_write(ADULT_FILE, "\n".join(domains) + "\n", 0o644)
+    config = read_json(CONFIG_FILE, {})
+    config["adultUpdated"] = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
+    write_json(CONFIG_FILE, config)
+    if apply and PASSWORD_FILE.exists():
+        apply_hosts()
+    return len(domains)
+
+
+def run_systemctl(*args: str, check: bool = True) -> None:
+    if TEST_ROOT:
+        return
+    subprocess.run(["systemctl", *args], check=check)
+
+
+def install_system_files(plugin_dir: Path, owner: str) -> None:
+    source_helper = plugin_dir / "lib" / "clarity-root"
+    source_systemd = plugin_dir / "systemd"
+    if not source_helper.is_file() or not source_systemd.is_dir():
+        fail("plugin installation files are incomplete")
+
+    ROOT_HELPER.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source_helper, ROOT_HELPER)
+    os.chmod(ROOT_HELPER, 0o755)
+
+    SYSTEMD_DIR.mkdir(parents=True, exist_ok=True)
+    for name in (
+        "clarity-reconcile.service",
+        "clarity-reconcile.timer",
+        "clarity-adult-list.service",
+        "clarity-adult-list.timer",
+    ):
+        shutil.copyfile(source_systemd / name, SYSTEMD_DIR / name)
+        os.chmod(SYSTEMD_DIR / name, 0o644)
+
+    if not USER_RE.fullmatch(owner):
+        fail(f"unsafe account name '{owner}'")
+    atomic_write(
+        SUDOERS_FILE,
+        f"# Managed by Clarity\n{owner} ALL=(root) NOPASSWD: /usr/local/lib/clarity/clarity-root *\n",
+        0o440,
+    )
+    if not TEST_ROOT:
+        result = subprocess.run(["visudo", "-cf", str(SUDOERS_FILE)], capture_output=True, text=True)
+        if result.returncode != 0:
+            SUDOERS_FILE.unlink(missing_ok=True)
+            fail(f"generated sudoers policy is invalid: {result.stderr.strip()}")
+
+
+def bootstrap(plugin_dir_arg: str, owner: str) -> None:
+    if PASSWORD_FILE.exists() or SUDOERS_FILE.exists():
+        fail("Clarity is already installed; uninstall it before installing again")
+    plugin_dir = Path(plugin_dir_arg).resolve()
+    defaults = plugin_dir / "config" / "distractions.txt"
+    if not defaults.is_file():
+        fail("default distraction list is missing")
+
+    password = read_password_from_stdin()
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    if HOSTS_FILE.exists() and not BACKUP_FILE.exists():
+        shutil.copy2(HOSTS_FILE, BACKUP_FILE)
+
+    existing = read_json(CONFIG_FILE, {})
+    config = {
+        "manualEnabled": bool(existing.get("manualEnabled", True)),
+        "scheduleEnabled": bool(existing.get("scheduleEnabled", False)),
+        "scheduleStart": str(existing.get("scheduleStart", "09:00")),
+        "scheduleEnd": str(existing.get("scheduleEnd", "17:00")),
+        "adultUpdated": str(existing.get("adultUpdated", "")),
+        "owner": owner,
+    }
+    parse_time(config["scheduleStart"])
+    parse_time(config["scheduleEnd"])
+    write_json(CONFIG_FILE, config)
+    write_json(PASSWORD_FILE, password_record(password), 0o600)
+    if not SITES_FILE.exists():
+        domains = parse_domain_lines(defaults.read_text(encoding="utf-8"))
+        atomic_write(SITES_FILE, "\n".join(domains) + "\n", 0o644)
+
+    count = update_adult_list(apply=False)
+    install_system_files(plugin_dir, owner)
+    apply_hosts()
+    run_systemctl("daemon-reload")
+    run_systemctl("enable", "--now", "clarity-reconcile.timer", "clarity-adult-list.timer")
+    print(f"Clarity installed. Permanently blocking {count} adult domains.")
+
+
+def status() -> dict:
+    config = read_json(CONFIG_FILE)
+    active = effective_active(config)
+    if bool(config.get("scheduleEnabled", False)):
+        reason = "Inside focus window" if active else "Outside focus window"
+    else:
+        reason = "Manual focus enabled" if active else "Manual focus disabled"
+    return {
+        "installed": True,
+        "active": active,
+        "manualEnabled": bool(config.get("manualEnabled", True)),
+        "scheduleEnabled": bool(config.get("scheduleEnabled", False)),
+        "scheduleStart": str(config.get("scheduleStart", "09:00")),
+        "scheduleEnd": str(config.get("scheduleEnd", "17:00")),
+        "permanentCount": len(read_domains(ADULT_FILE)),
+        "distractionCount": len(read_domains(SITES_FILE)),
+        "adultUpdated": str(config.get("adultUpdated", "")),
+        "reason": reason,
+    }
+
+
+def set_manual(enabled: bool, password: str | None = None) -> None:
+    config = read_json(CONFIG_FILE)
+    if not enabled:
+        if password is None:
+            fail("Clarity password is required")
+        verify_password(password)
+        # A deliberate manual off also turns schedule control off. Otherwise
+        # the next minute would silently turn blocking back on.
+        config["scheduleEnabled"] = False
+    elif bool(config.get("scheduleEnabled", False)):
+        fail("the daily schedule currently controls Clarity")
+    config["manualEnabled"] = enabled
+    write_json(CONFIG_FILE, config)
+    apply_hosts()
+
+
+def set_schedule(enabled: bool, start: str, end: str, password: str) -> None:
+    verify_password(password)
+    parse_time(start)
+    parse_time(end)
+    config = read_json(CONFIG_FILE)
+    config["scheduleEnabled"] = enabled
+    config["scheduleStart"] = start
+    config["scheduleEnd"] = end
+    write_json(CONFIG_FILE, config)
+    apply_hosts()
+
+
+def set_sites(password: str, content: str) -> int:
+    verify_password(password)
+    domains = parse_domain_lines(content)
+    if not domains:
+        fail("the distraction list may not be empty")
+    atomic_write(SITES_FILE, "\n".join(domains) + "\n", 0o644)
+    apply_hosts()
+    return len(domains)
+
+
+def remove_managed_hosts() -> None:
+    if not HOSTS_FILE.exists():
+        return
+    original = HOSTS_FILE.read_text(encoding="utf-8")
+    content = strip_managed_sections(original)
+    content = content + "\n" if content else ""
+    if content == original:
+        return
+    previous_stat = HOSTS_FILE.stat()
+    atomic_write(HOSTS_FILE, content, stat.S_IMODE(previous_stat.st_mode))
+    if not TEST_ROOT:
+        os.chown(HOSTS_FILE, previous_stat.st_uid, previous_stat.st_gid)
+    flush_dns()
+
+
+def uninstall() -> None:
+    run_systemctl("disable", "--now", "clarity-reconcile.timer", "clarity-adult-list.timer", check=False)
+    remove_managed_hosts()
+    for name in (
+        "clarity-reconcile.service",
+        "clarity-reconcile.timer",
+        "clarity-adult-list.service",
+        "clarity-adult-list.timer",
+    ):
+        (SYSTEMD_DIR / name).unlink(missing_ok=True)
+    run_systemctl("daemon-reload", check=False)
+    SUDOERS_FILE.unlink(missing_ok=True)
+    shutil.rmtree(STATE_DIR, ignore_errors=True)
+    ROOT_HELPER.unlink(missing_ok=True)
+    print("Clarity system blocking removed.")
+
+
+def usage() -> str:
+    return """Usage: clarity-root COMMAND [ARGS]
+
+Commands:
+  bootstrap PLUGIN_DIR OWNER      Install system integration; password on stdin
+  status                          Print JSON state
+  enable                          Enable distraction blocking
+  disable                         Disable blocking; password on stdin
+  schedule-set STATE START END    Set schedule; password on stdin
+  sites-list                      Print distraction domains
+  sites-set                       Replace domains; password first on stdin
+  reconcile                       Apply current/scheduled state
+  update-adult                    Refresh permanent adult blocklist
+  uninstall                       Remove all Clarity system integration
+"""
+
+
+def main(argv: list[str]) -> int:
+    require_root()
+    if not argv or argv[0] in {"-h", "--help", "help"}:
+        print(usage(), end="")
+        return 0
+    command, *args = argv
+    if command == "bootstrap" and len(args) == 2:
+        bootstrap(args[0], args[1])
+    elif command == "status" and not args:
+        print(json.dumps(status(), separators=(",", ":")))
+    elif command == "enable" and not args:
+        set_manual(True)
+        print("Clarity is on.")
+    elif command == "disable" and not args:
+        set_manual(False, read_password_from_stdin())
+        print("Clarity is off; the permanent adult block remains active.")
+    elif command == "schedule-set" and len(args) == 3 and args[0] in {"enabled", "disabled"}:
+        set_schedule(args[0] == "enabled", args[1], args[2], read_password_from_stdin())
+        print(f"Schedule {args[0]} ({args[1]}–{args[2]}).")
+    elif command == "sites-list" and not args:
+        print(SITES_FILE.read_text(encoding="utf-8"), end="")
+    elif command == "sites-set" and not args:
+        password = read_password_from_stdin()
+        count = set_sites(password, sys.stdin.read())
+        print(f"Saved {count} distracting domains.")
+    elif command == "reconcile" and not args:
+        changed = apply_hosts()
+        print("Clarity hosts updated." if changed else "Clarity hosts already current.")
+    elif command == "update-adult" and not args:
+        print(f"Updated permanent adult blocklist ({update_adult_list()} domains).")
+    elif command == "uninstall" and not args:
+        uninstall()
+    else:
+        fail("invalid command or arguments\n" + usage().rstrip())
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main(sys.argv[1:]))
+    except ClarityError as error:
+        print(f"clarity: {error}", file=sys.stderr)
+        raise SystemExit(1)
+    except KeyboardInterrupt:
+        print("clarity: cancelled", file=sys.stderr)
+        raise SystemExit(130)

@@ -1,0 +1,12 @@
+[Unit]
+Description=Apply the Clarity daily focus schedule
+
+[Timer]
+OnBootSec=30s
+OnCalendar=*-*-* *:*:00
+AccuracySec=10s
+Persistent=true
+Unit=clarity-reconcile.service
+
+[Install]
+WantedBy=timers.target
