@@ -1,10 +1,9 @@
-<div align="center">
-  <samp>
-    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;▬&nbsp;▄<br>
-    █▀▀&nbsp;█&nbsp;&nbsp;&nbsp;▄▀█&nbsp;█▀▀&nbsp;█&nbsp;█▀▀&nbsp;█&nbsp;█<br>
-    ▀▀▀&nbsp;▀▀▀&nbsp;▀▀▀&nbsp;▀&nbsp;&nbsp;&nbsp;▀&nbsp;▀▀&nbsp;&nbsp;▀▀█
-  </samp>
-</div>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./clarity-logo-dark.svg">
+    <img src="./clarity-logo.svg" width="440" alt="Clarity">
+  </picture>
+</p>
 
 # omarchy-clarity
 

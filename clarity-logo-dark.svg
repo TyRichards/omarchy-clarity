@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="440" height="104" viewBox="0 0 440 104" role="img" aria-labelledby="title description">
+  <title id="title">Clarity</title>
+  <desc id="description">Clarity block-character wordmark</desc>
+  <text fill="#f0f6fc" font-family="JetBrains Mono, SFMono-Regular, Consolas, Liberation Mono, monospace" font-size="28" font-weight="700" xml:space="preserve">
+    <tspan x="8" y="27">                ▬ ▄</tspan>
+    <tspan x="8" y="59">█▀▀ █   ▄▀█ █▀▀ █ █▀▀ █ █</tspan>
+    <tspan x="8" y="91">▀▀▀ ▀▀▀ ▀▀▀ ▀   ▀ ▀▀  ▀▀█</tspan>
+  </text>
+</svg>
