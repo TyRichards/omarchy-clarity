@@ -1,3 +1,15 @@
+```text
+           ░██                     ░██   ░██
+           ░██                           ░██
+ ░███████  ░██  ░██████   ░██░████ ░██░████████ ░██    ░██
+░██    ░██ ░██       ░██  ░███     ░██   ░██    ░██    ░██
+░██        ░██  ░███████  ░██      ░██   ░██    ░██    ░██
+░██    ░██ ░██ ░██   ░██  ░██      ░██   ░██    ░██   ░███
+ ░███████  ░██  ░█████░██ ░██      ░██    ░████  ░█████░██
+                                                       ░██
+                                                 ░███████
+```
+
 # omarchy-clarity
 
 An aggressive output guard for Omarchy’s top-right bar. **Clarity** can maintain a massive permanent adult-site blacklist and blocks social feeds, shopping, video, gambling, news, games, and other productivity killers while focus mode is active—without blocking major AI tools.
