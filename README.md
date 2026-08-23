@@ -1,9 +1,8 @@
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="./clarity-logo-dark.svg">
-    <img src="./clarity-logo.svg" width="440" alt="Clarity">
-  </picture>
-</p>
+```text
+                ▬ ▄
+█▀▀ █   ▄▀█ █▀▀ █ █▀▀ █ █
+▀▀▀ ▀▀▀ ▀▀▀ ▀   ▀ ▀▀  ▀▀█  by Ty Richards
+```
 
 # omarchy-clarity
 
