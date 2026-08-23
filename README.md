@@ -1,7 +1,8 @@
 ```text
-                ▬ ▄
+                  ▄
 █▀▀ █   ▄▀█ █▀▀ █ █▀▀ █ █
-▀▀▀ ▀▀▀ ▀▀▀ ▀   ▀ ▀▀  ▀▀█  by Ty Richards
+▀▀▀ ▀▀▀ ▀▀▀ ▀   ▀ ▀▀  ▀▀█
+by Ty Richards
 ```
 
 # omarchy-clarity
