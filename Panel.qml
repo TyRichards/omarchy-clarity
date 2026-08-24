@@ -819,12 +819,13 @@ Panel {
             spacing: Style.space(6)
 
             PanelSectionHeader {
-              text: "SITES BLOCKED"
+              text: root.clarityActive ? "SITES BLOCKED" : "DISTRACTION BLOCKER IS OFF"
               foreground: root.bar.foreground
               fontFamily: root.bar.fontFamily
             }
 
             GridLayout {
+              visible: root.clarityActive
               width: parent.width
               columns: 2
               columnSpacing: Style.space(16)
