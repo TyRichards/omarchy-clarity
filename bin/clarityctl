@@ -43,11 +43,17 @@ Commands:
   status                         Print JSON state
   on                             Enable distraction blocking
   off [--password-stdin]         Disable with the Clarity password
-  schedule STATE START END       Enable/disable a daily HH:MM window
-  sites list                     Print the distracting-domain list
-  sites edit                     Edit the list, guarded by the password
+  schedule enabled|disabled      Toggle all daily windows
+  schedule add START END         Add a daily HH:MM window
+  schedule edit INDEX START END  Edit a window by zero-based index
+  schedule remove INDEX          Remove a window by zero-based index
+  whitelist list                Print sites allowed through focus blocking
+  whitelist add URL             Add one site, guarded by the password
+  whitelist remove URL          Remove one site, guarded by the password
+  whitelist edit                Edit the focus whitelist, guarded by password
   update-lists                   Refresh permanent and focus blocklists
   update-adult                   Alias for update-lists
+  enable-adult                   Permanently enable adult blocking until uninstall
   reconcile                      Re-apply current state
   uninstall                      Remove system integration (v1: no password)
 USAGE
@@ -79,45 +85,137 @@ off | disable)
   fi
   ;;
 schedule)
-  state=${1:-}
-  start=${2:-}
-  end=${3:-}
-  shift $(( $# >= 3 ? 3 : $# ))
-  [[ $state == enabled || $state == disabled ]] || fail "schedule state must be enabled or disabled"
-  [[ -n $start && -n $end ]] || fail "schedule requires START and END in HH:MM"
-  if [[ ${1:-} == --password-stdin ]]; then
-    shift
-    (($# == 0)) || fail "unexpected arguments"
-    run_root schedule-set "$state" "$start" "$end"
-  else
-    (($# == 0)) || fail "unexpected arguments"
-    protected_command schedule-set "$state" "$start" "$end"
-  fi
+  subcommand=${1:-}
+  shift || true
+  case "$subcommand" in
+  enabled | disabled)
+    if (($# >= 2)) && [[ ${1:-} != --password-stdin ]]; then
+      start=$1
+      end=$2
+      shift 2
+      if [[ ${1:-} == --password-stdin ]]; then
+        shift
+        (($# == 0)) || fail "unexpected arguments"
+        run_root schedule-set "$subcommand" "$start" "$end"
+      else
+        (($# == 0)) || fail "unexpected arguments"
+        protected_command schedule-set "$subcommand" "$start" "$end"
+      fi
+    elif [[ ${1:-} == --password-stdin ]]; then
+      shift
+      (($# == 0)) || fail "unexpected arguments"
+      run_root schedule-state "$subcommand"
+    else
+      (($# == 0)) || fail "unexpected arguments"
+      protected_command schedule-state "$subcommand"
+    fi
+    ;;
+  add)
+    start=${1:-}
+    end=${2:-}
+    shift $(( $# >= 2 ? 2 : $# ))
+    [[ -n $start && -n $end ]] || fail "schedule add requires START and END in HH:MM"
+    if [[ ${1:-} == --password-stdin ]]; then
+      shift
+      (($# == 0)) || fail "unexpected arguments"
+      run_root schedule-window-add "$start" "$end"
+    else
+      (($# == 0)) || fail "unexpected arguments"
+      protected_command schedule-window-add "$start" "$end"
+    fi
+    ;;
+  edit)
+    index=${1:-}
+    start=${2:-}
+    end=${3:-}
+    shift $(( $# >= 3 ? 3 : $# ))
+    [[ $index =~ ^[0-9]+$ && -n $start && -n $end ]] || fail "schedule edit requires INDEX START END"
+    if [[ ${1:-} == --password-stdin ]]; then
+      shift
+      (($# == 0)) || fail "unexpected arguments"
+      run_root schedule-window-edit "$index" "$start" "$end"
+    else
+      (($# == 0)) || fail "unexpected arguments"
+      protected_command schedule-window-edit "$index" "$start" "$end"
+    fi
+    ;;
+  remove)
+    index=${1:-}
+    shift || true
+    [[ $index =~ ^[0-9]+$ ]] || fail "schedule remove requires a zero-based window index"
+    if [[ ${1:-} == --password-stdin ]]; then
+      shift
+      (($# == 0)) || fail "unexpected arguments"
+      run_root schedule-window-remove "$index"
+    else
+      (($# == 0)) || fail "unexpected arguments"
+      protected_command schedule-window-remove "$index"
+    fi
+    ;;
+  *) fail "schedule requires enabled, disabled, add, edit, or remove" ;;
+  esac
   ;;
-sites)
+whitelist)
   subcommand=${1:-}
   shift || true
   case "$subcommand" in
   list)
-    (($# == 0)) || fail "sites list takes no arguments"
-    run_root sites-list
+    (($# == 0)) || fail "whitelist list takes no arguments"
+    run_root whitelist-list
+    ;;
+  add)
+    site=${1:-}
+    shift || true
+    [[ -n $site ]] || fail "whitelist add requires a URL or domain"
+    if [[ ${1:-} == --password-stdin ]]; then
+      shift
+      (($# == 0)) || fail "unexpected arguments"
+      run_root whitelist-add "$site"
+    else
+      (($# == 0)) || fail "unexpected arguments"
+      protected_command whitelist-add "$site"
+    fi
+    ;;
+  remove)
+    site=${1:-}
+    shift || true
+    [[ -n $site ]] || fail "whitelist remove requires a URL or domain"
+    if [[ ${1:-} == --password-stdin ]]; then
+      shift
+      (($# == 0)) || fail "unexpected arguments"
+      run_root whitelist-remove "$site"
+    else
+      (($# == 0)) || fail "unexpected arguments"
+      protected_command whitelist-remove "$site"
+    fi
     ;;
   edit)
-    (($# == 0)) || fail "sites edit takes no arguments"
+    (($# == 0)) || fail "whitelist edit takes no arguments"
     tmp=$(mktemp)
     trap 'rm -f "$tmp"' EXIT
-    run_root sites-list >"$tmp"
+    {
+      printf '%s\n' \
+        "# One domain per line. These sites bypass focus blocking." \
+        "# Permanent adult blocking is never bypassed by this whitelist." \
+        "# Example: youtube.com" \
+        ""
+      run_root whitelist-list
+    } >"$tmp"
     editor=${VISUAL:-${EDITOR:-nano}}
     "$editor" "$tmp"
-    password=$(read_clarity_password "Save with Clarity password: ")
-    { printf '%s\n' "$password"; cat "$tmp"; } | run_root sites-set
+    password=$(read_clarity_password "Save whitelist with Clarity password: ")
+    { printf '%s\n' "$password"; cat "$tmp"; } | run_root whitelist-set
     ;;
-  *) fail "sites requires list or edit" ;;
+  *) fail "whitelist requires list, add, remove, or edit" ;;
   esac
   ;;
 update-lists | update-adult)
   (($# == 0)) || fail "$command takes no arguments"
   run_root update-lists
+  ;;
+enable-adult)
+  (($# == 0)) || fail "enable-adult takes no arguments"
+  run_root enable-adult
   ;;
 reconcile)
   (($# == 0)) || fail "reconcile takes no arguments"

@@ -20,25 +20,31 @@ class ClarityRootTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         (self.root / "etc").mkdir(parents=True)
-        (self.root / "etc/hosts").write_text(
-            "127.0.0.1 localhost\n192.0.2.10 keep.example.test\n", encoding="utf-8"
-        )
-        adult = self.root / "adult-hosts"
-        adult.write_text(
+        self.original_hosts = "127.0.0.1 localhost\n192.0.2.10 keep.example.test\n"
+        (self.root / "etc/hosts").write_text(self.original_hosts, encoding="utf-8")
+        original_unit = self.root / "etc/systemd/system/clarity-reconcile.service"
+        original_unit.parent.mkdir(parents=True)
+        original_unit.write_text("original reconcile unit\n", encoding="utf-8")
+        original_helper = self.root / "usr/local/lib/clarity/clarity-root"
+        original_helper.parent.mkdir(parents=True)
+        original_helper.write_text("original helper\n", encoding="utf-8")
+        self.adult_source = self.root / "adult-hosts"
+        self.adult_source.write_text(
             "127.0.0.1 localhost\n0.0.0.0 adult-one.test\n0.0.0.0 adult-two.test\n"
             "0.0.0.0 adult-three.test\n0.0.0.0 openai.com\n",
             encoding="utf-8",
         )
         focus = self.root / "focus-hosts"
         focus.write_text(
-            "social-one.test\nsocial-two.test\nsocial-three.test\nchatgpt.com\nclaude.ai\n",
+            "social-one.test\nsocial-two.test\nsocial-three.test\nsocial-four.test\n"
+            "social-five.test\nchatgpt.com\nclaude.ai\nspotify.com\nmusic.youtube.com\nyoutube.com\n",
             encoding="utf-8",
         )
         self.env = os.environ.copy()
         self.env.update(
             {
                 "CLARITY_TEST_ROOT": str(self.root),
-                "CLARITY_ADULT_URLS": adult.as_uri(),
+                "CLARITY_ADULT_URLS": self.adult_source.as_uri(),
                 "CLARITY_DISTRACTION_URLS": focus.as_uri(),
                 "CLARITY_MIN_ADULT_DOMAINS": "3",
                 "CLARITY_MIN_DISTRACTION_DOMAINS": "3",
@@ -68,7 +74,19 @@ class ClarityRootTests(unittest.TestCase):
     def test_bootstrap_blocks_both_categories(self):
         state = self.status()
         self.assertTrue(state["active"])
+        self.assertTrue(state["backupsReady"])
+        self.assertFalse(state["scheduleEnabled"])
+        self.assertEqual(state["scheduleWindows"], [])
         self.assertEqual(state["permanentCount"], 3)
+        self.assertEqual(state["categoryCounts"]["Adult"], 3)
+        self.assertEqual(state["categoryCounts"]["Social & Feeds"], 6)
+        self.assertEqual(len(state["categoryCounts"]), 6)
+        self.assertEqual(state["whitelistSites"], [])
+        self.assertTrue((self.root / "var/lib/clarity/backup-manifest.json").is_file())
+        self.assertEqual(
+            (self.root / "var/lib/clarity/hosts.pre-clarity").read_text(encoding="utf-8"),
+            self.original_hosts,
+        )
         hosts = (self.root / "etc/hosts").read_text(encoding="utf-8")
         self.assertIn("# BEGIN CLARITY PERMANENT", hosts)
         self.assertIn("0.0.0.0 adult-one.test", hosts)
@@ -80,6 +98,9 @@ class ClarityRootTests(unittest.TestCase):
         self.assertNotIn("openai.com", hosts)
         self.assertNotIn("chatgpt.com", hosts)
         self.assertNotIn("claude.ai", hosts)
+        self.assertNotIn("spotify.com", hosts)
+        self.assertNotIn("music.youtube.com", hosts)
+        self.assertIn("youtube.com", hosts)
         self.assertIn("social-one.test", hosts)
 
     def test_setup_can_opt_out_of_permanent_adult_blocking(self):
@@ -93,9 +114,42 @@ class ClarityRootTests(unittest.TestCase):
         state = self.status()
         self.assertFalse(state["permanentEnabled"])
         self.assertEqual(state["permanentCount"], 0)
+        self.assertEqual(state["categoryCounts"]["Adult"], 0)
         hosts = (self.root / "etc/hosts").read_text(encoding="utf-8")
         self.assertNotIn("# BEGIN CLARITY PERMANENT", hosts)
         self.assertIn("# BEGIN CLARITY DISTRACTIONS", hosts)
+
+    def test_skipped_adult_blocking_can_be_enabled_later(self):
+        result = self.run_helper("uninstall")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.run_helper(
+            "bootstrap", str(PLUGIN_DIR), "testuser", "disabled", input=PASSWORD + "\n"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.run_helper("enable-adult")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        state = self.status()
+        self.assertTrue(state["permanentEnabled"])
+        self.assertEqual(state["permanentCount"], 3)
+        hosts = (self.root / "etc/hosts").read_text(encoding="utf-8")
+        self.assertIn("# BEGIN CLARITY PERMANENT", hosts)
+        self.assertIn("adult-one.test", hosts)
+
+    def test_failed_later_adult_enable_rolls_back_opt_out(self):
+        result = self.run_helper("uninstall")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.run_helper(
+            "bootstrap", str(PLUGIN_DIR), "testuser", "disabled", input=PASSWORD + "\n"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.env["CLARITY_ADULT_URLS"] = (self.root / "does-not-exist").as_uri()
+        result = self.run_helper("enable-adult")
+        self.assertNotEqual(result.returncode, 0)
+        state = self.status()
+        self.assertFalse(state["permanentEnabled"])
+        self.assertEqual(state["permanentCount"], 0)
+        hosts = (self.root / "etc/hosts").read_text(encoding="utf-8")
+        self.assertNotIn("# BEGIN CLARITY PERMANENT", hosts)
 
     def test_wrong_password_cannot_disable(self):
         result = self.run_helper("disable", input="wrong-password\n")
@@ -106,45 +160,158 @@ class ClarityRootTests(unittest.TestCase):
     def test_disable_keeps_permanent_block(self):
         result = self.run_helper("disable", input=PASSWORD + "\n")
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), " Success. Clarity Blocker is off.")
         hosts = (self.root / "etc/hosts").read_text(encoding="utf-8")
         self.assertIn("# BEGIN CLARITY PERMANENT", hosts)
         self.assertNotIn("# BEGIN CLARITY DISTRACTIONS", hosts)
         self.assertFalse(self.status()["active"])
 
     def test_schedule_mutation_requires_password(self):
-        result = self.run_helper("schedule-set", "enabled", "22:00", "06:00", input="bad-password\n")
+        result = self.run_helper("schedule-state", "enabled", input=PASSWORD + "\n")
         self.assertNotEqual(result.returncode, 0)
-        self.assertFalse(self.status()["scheduleEnabled"])
-        result = self.run_helper("schedule-set", "enabled", "22:00", "06:00", input=PASSWORD + "\n")
+        self.assertIn("add at least one", result.stderr)
+        result = self.run_helper("schedule-window-add", "22:00", "06:00", input="bad-password\n")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.status()["scheduleWindows"], [])
+        result = self.run_helper("schedule-window-add", "22:00", "06:00", input=PASSWORD + "\n")
         self.assertEqual(result.returncode, 0, result.stderr)
         state = self.status()
         self.assertTrue(state["scheduleEnabled"])
-        self.assertEqual(state["scheduleStart"], "22:00")
-        self.assertEqual(state["scheduleEnd"], "06:00")
-
-    def test_empty_site_list_is_rejected(self):
-        result = self.run_helper("sites-set", input=PASSWORD + "\n# nothing\n")
+        self.assertEqual(state["scheduleWindows"], [{"start": "22:00", "end": "06:00"}])
+        result = self.run_helper("schedule-window-edit", "0", "21:00", "05:00", input="bad-password\n")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("may not be empty", result.stderr)
+        self.assertEqual(self.status()["scheduleWindows"], [{"start": "22:00", "end": "06:00"}])
+        result = self.run_helper("schedule-window-edit", "0", "21:00", "05:00", input=PASSWORD + "\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.status()["scheduleWindows"], [{"start": "21:00", "end": "05:00"}])
+        result = self.run_helper("schedule-window-remove", "0", input=PASSWORD + "\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        state = self.status()
+        self.assertFalse(state["scheduleEnabled"])
+        self.assertEqual(state["scheduleWindows"], [])
 
-    def test_upgrade_preserves_custom_sites_and_setup_choice(self):
-        result = self.run_helper("sites-set", input=PASSWORD + "\ncustom-focus.test\n")
+    def test_schedule_rejects_overlaps_and_more_than_three_windows(self):
+        result = self.run_helper("schedule-window-add", "22:00", "06:00", input=PASSWORD + "\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for start, end in (("23:00", "01:00"), ("05:00", "08:00")):
+            result = self.run_helper("schedule-window-add", start, end, input=PASSWORD + "\n")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("may not overlap", result.stderr)
+        result = self.run_helper("schedule-window-add", "18:00", "20:00", input=PASSWORD + "\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.run_helper("schedule-window-add", "20:00", "21:00", input=PASSWORD + "\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.run_helper("schedule-window-edit", "1", "23:30", "00:30", input=PASSWORD + "\n")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("may not overlap", result.stderr)
+        result = self.run_helper("schedule-window-add", "21:00", "22:00", input=PASSWORD + "\n")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("up to three", result.stderr)
+        self.assertEqual(len(self.status()["scheduleWindows"]), 3)
+
+    def test_whitelist_can_be_empty(self):
+        result = self.run_helper("whitelist-set", input=PASSWORD + "\n# nothing yet\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.status()["whitelistCount"], 0)
+
+    def test_whitelist_bypasses_focus_only(self):
+        result = self.run_helper(
+            "whitelist-set", input=PASSWORD + "\nadult-one.test\nsocial-one.test\n"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        hosts = (self.root / "etc/hosts").read_text(encoding="utf-8")
+        self.assertIn("adult-one.test", hosts)
+        self.assertNotIn("social-one.test", hosts)
+        self.assertEqual(self.status()["whitelistCount"], 2)
+
+    def test_whitelist_mutation_requires_password(self):
+        result = self.run_helper("whitelist-set", input="wrong-password\nsocial-one.test\n")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("incorrect Clarity password", result.stderr)
+        self.assertEqual(self.status()["whitelistCount"], 0)
+
+    def test_whitelist_add_accepts_a_url_and_deduplicates(self):
+        rejected = self.run_helper(
+            "whitelist-add", "https://social-one.test/something", input="wrong-password\n"
+        )
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertEqual(self.status()["whitelistCount"], 0)
+        for _ in range(2):
+            result = self.run_helper(
+                "whitelist-add", "https://social-one.test/something", input=PASSWORD + "\n"
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+        state = self.status()
+        self.assertEqual(state["whitelistCount"], 1)
+        self.assertEqual(state["whitelistSites"], ["social-one.test"])
+        hosts = (self.root / "etc/hosts").read_text(encoding="utf-8")
+        self.assertNotIn("social-one.test", hosts)
+
+        rejected = self.run_helper("whitelist-remove", "social-one.test", input="wrong-password\n")
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertEqual(self.status()["whitelistSites"], ["social-one.test"])
+        result = self.run_helper("whitelist-remove", "social-one.test", input=PASSWORD + "\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        state = self.status()
+        self.assertEqual(state["whitelistCount"], 0)
+        self.assertEqual(state["whitelistSites"], [])
+        hosts = (self.root / "etc/hosts").read_text(encoding="utf-8")
+        self.assertIn("social-one.test", hosts)
+
+    def test_upgrade_removes_unused_legacy_default_schedule(self):
+        config_file = self.root / "var/lib/clarity/config.json"
+        config = json.loads(config_file.read_text(encoding="utf-8"))
+        config.pop("scheduleConfigured", None)
+        config["scheduleEnabled"] = True
+        config["scheduleWindows"] = [{"start": "09:00", "end": "17:00"}]
+        config_file.write_text(json.dumps(config), encoding="utf-8")
+        result = self.run_helper("upgrade", str(PLUGIN_DIR))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        state = self.status()
+        self.assertFalse(state["scheduleEnabled"])
+        self.assertEqual(state["scheduleWindows"], [])
+
+    def test_upgrade_preserves_whitelist_and_setup_choice(self):
+        result = self.run_helper("whitelist-set", input=PASSWORD + "\ncustom-focus.test\n")
         self.assertEqual(result.returncode, 0, result.stderr)
         result = self.run_helper("upgrade", str(PLUGIN_DIR))
         self.assertEqual(result.returncode, 0, result.stderr)
         state = self.status()
         self.assertTrue(state["permanentEnabled"])
+        whitelist = (self.root / "var/lib/clarity/whitelist.txt").read_text(encoding="utf-8")
+        self.assertIn("custom-focus.test", whitelist)
         sites = (self.root / "var/lib/clarity/distractions.txt").read_text(encoding="utf-8")
-        self.assertIn("custom-focus.test", sites)
         self.assertIn("youtube.com", sites)
 
-    def test_uninstall_removes_only_managed_sections(self):
+    def test_uninstall_restores_exact_backups_and_requires_fresh_setup(self):
+        hosts_file = self.root / "etc/hosts"
+        hosts_file.write_text(
+            hosts_file.read_text(encoding="utf-8") + "203.0.113.9 added-after-activation.test\n",
+            encoding="utf-8",
+        )
         result = self.run_helper("uninstall")
         self.assertEqual(result.returncode, 0, result.stderr)
-        hosts = (self.root / "etc/hosts").read_text(encoding="utf-8")
-        self.assertNotIn("CLARITY", hosts)
-        self.assertIn("192.0.2.10 keep.example.test", hosts)
+        self.assertEqual(hosts_file.read_text(encoding="utf-8"), self.original_hosts)
+        self.assertEqual(
+            (self.root / "etc/systemd/system/clarity-reconcile.service").read_text(encoding="utf-8"),
+            "original reconcile unit\n",
+        )
+        self.assertEqual(
+            (self.root / "usr/local/lib/clarity/clarity-root").read_text(encoding="utf-8"),
+            "original helper\n",
+        )
+        self.assertFalse((self.root / "etc/systemd/system/clarity-adult-list.timer").exists())
+        self.assertFalse((self.root / "etc/sudoers.d/clarity").exists())
         self.assertFalse((self.root / "var/lib/clarity").exists())
+        self.assertNotEqual(self.run_helper("status").returncode, 0)
+
+        new_password = "brand-new-clarity-password"
+        result = self.run_helper(
+            "bootstrap", str(PLUGIN_DIR), "testuser", "enabled", input=new_password + "\n"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotEqual(self.run_helper("disable", input=PASSWORD + "\n").returncode, 0)
+        self.assertEqual(self.run_helper("disable", input=new_password + "\n").returncode, 0)
 
     def test_overnight_window_logic(self):
         old_root = os.environ.get("CLARITY_TEST_ROOT")
@@ -156,7 +323,13 @@ class ClarityRootTests(unittest.TestCase):
             spec.loader.exec_module(module)
             import datetime as dt
 
-            config = {"scheduleStart": "22:00", "scheduleEnd": "06:00"}
+            config = {
+                "scheduleWindows": [
+                    {"start": "09:00", "end": "12:00"},
+                    {"start": "22:00", "end": "06:00"},
+                ]
+            }
+            self.assertTrue(module.inside_schedule(config, dt.datetime(2026, 1, 1, 10, 0)))
             self.assertTrue(module.inside_schedule(config, dt.datetime(2026, 1, 1, 23, 0)))
             self.assertTrue(module.inside_schedule(config, dt.datetime(2026, 1, 1, 5, 59)))
             self.assertFalse(module.inside_schedule(config, dt.datetime(2026, 1, 1, 12, 0)))

@@ -10,8 +10,8 @@ fail() {
   exit 1
 }
 
-show_clarity_logo() {
-  local color=${GUM_CHOOSE_ITEM_FOREGROUND:-}
+set_ansi_color() {
+  local color=$1
   local hex red green blue
   if [[ $color =~ ^#[[:xdigit:]]{6}$ ]]; then
     hex=${color#\#}
@@ -22,18 +22,237 @@ show_clarity_logo() {
   else
     printf '\033[39m'
   fi
-  cat <<'LOGO'
-           ░██                     ░██   ░██
-           ░██                           ░██
- ░███████  ░██  ░██████   ░██░████ ░██░████████ ░██    ░██
-░██    ░██ ░██       ░██  ░███     ░██   ░██    ░██    ░██
-░██        ░██  ░███████  ░██      ░██   ░██    ░██    ░██
-░██    ░██ ░██ ░██   ░██  ░██      ░██   ░██    ░██   ░███
- ░███████  ░██  ░█████░██ ░██      ░██    ░████  ░█████░██
-                                                       ░██
-                                                 ░███████
-LOGO
-  printf '\033[0m\n'
+}
+
+set_accent_color() {
+  set_ansi_color "${GUM_CHOOSE_CURSOR_FOREGROUND:-${GUM_CHOOSE_ITEM_FOREGROUND:-}}"
+}
+
+reset_ansi_color() {
+  printf '\033[0m'
+}
+
+show_clarity_logo() {
+  set_ansi_color "${GUM_CHOOSE_ITEM_FOREGROUND:-}"
+  cat "$SCRIPT_DIR/clarity-ascii.txt"
+  reset_ansi_color
+  printf '\n'
+}
+
+clear_onboarding() {
+  printf '\033[2J\033[H'
+}
+
+section_header() {
+  local title=$1
+  local width=72
+  local fill=$((width - ${#title} - 1))
+  local rule
+  printf -v rule '%*s' "$fill" ''
+  set_accent_color
+  printf '%s %s\n' "$title" "${rule// /░}"
+  reset_ansi_color
+}
+
+show_selector() {
+  local index=$1
+  if ((onboarding_focus == index)); then
+    set_accent_color
+    printf '> '
+    reset_ansi_color
+  else
+    printf '  '
+  fi
+}
+
+show_focus_row() {
+  local index=$1
+  local label=$2
+  local accented=${3:-false}
+  show_selector "$index"
+  if [[ $accented == true ]]; then
+    set_accent_color
+    printf '%s' "$label"
+    reset_ansi_color
+    printf '\n'
+  else
+    printf '%s\n' "$label"
+  fi
+}
+
+show_detail_row() {
+  local index=$1
+  local heading=$2
+  local expanded=$3
+  local action='▓  VIEW DETAILS ▓'
+  [[ $expanded == true ]] && action='▓  VIEW DETAILS ▓'
+
+  show_selector "$index"
+  printf '%s  ' "$heading"
+  set_accent_color
+  printf '%s' "$action"
+  reset_ansi_color
+  printf '\n'
+}
+
+show_distraction_details() {
+  cat <<'DETAILS'
+   Toggle on/off or schedule access to distracting websites. (i.e. Social
+   Media that scrolls infinitely). You must have a unique Clarity Password
+   to manually toggle the switch off. Sites you still need can be added to
+   a simple focus whitelist after setup.
+DETAILS
+}
+
+show_adult_details() {
+  cat <<'DETAILS'
+   Opting into the persistent adult blacklist is an initial setup choice. If
+   enabled, it is never affected by the Clarity toggle or schedule and remains
+   until uninstall of this plugin. If you skip it now, no adult feed is applied;
+   you can permanently enable it later from the Clarity panel.
+DETAILS
+}
+
+show_technical_details() {
+  cat <<'DETAILS'
+  • add root-owned sections to /etc/hosts;
+  • aggressively block social, video, shopping, gambling, torrent, news,
+    entertainment, and other output killers while clarity mode is enabled;
+  • persistently merge three massive, well-maintained adult-domain feeds;
+  • explicitly allow major AI tools such as ChatGPT and Claude;
+  • start with the distraction block enabled;
+  • install persistent schedule reconciliation and weekly list updates.
+DETAILS
+}
+
+build_onboarding_frame() {
+  show_clarity_logo
+  printf '\nGet Focused. Get Productive. Get Clarity.\n\n\n\n'
+  section_header 'CLARITY SETUP'
+  printf '\n\nClarity does 2 things for you:\n\n'
+
+  show_detail_row 0 '1. TURN DISTRACTING SITES ON & OFF (Or Schedule)' "$distraction_expanded"
+  if [[ $distraction_expanded == true ]]; then
+    printf '\n'
+    show_distraction_details
+    printf '\n'
+  fi
+  printf '\n'
+  show_detail_row 1 '2. BLOCK ADULT SITES (Optional)' "$adult_expanded"
+  if [[ $adult_expanded == true ]]; then
+    printf '\n'
+    show_adult_details
+    printf '\n'
+  fi
+  printf '\n'
+  show_detail_row 2 '  TECHNICAL THINGS UNDER THE HOOD' "$technical_expanded"
+  if [[ $technical_expanded == true ]]; then
+    printf '\n'
+    show_technical_details
+    printf '\n'
+  fi
+
+  printf '\n\n\n'
+  show_focus_row 3 '▓  CREATE NEW CLARITY PASSWORD ▓' true
+}
+
+render_onboarding() {
+  local frame
+  frame=$(build_onboarding_frame)
+
+  # Clear the complete viewport inside a synchronized update before drawing.
+  # Overwriting from cursor-home leaves stale text when an expanded row closes.
+  printf '\033[?2026h\033[2J\033[H%s\n\033[?2026l' "$frame"
+}
+
+read_onboarding_key() {
+  local first rest=''
+  IFS= read -r -s -n 1 first || exit 130
+  if [[ $first == $'\e' ]]; then
+    IFS= read -r -s -n 2 -t 0.1 rest || true
+  fi
+  onboarding_key=$first$rest
+}
+
+run_onboarding() {
+  onboarding_focus=0
+  distraction_expanded=false
+  adult_expanded=false
+  technical_expanded=false
+
+  while true; do
+    render_onboarding
+    read_onboarding_key
+    case $onboarding_key in
+    $'\e[A' | k) onboarding_focus=$(((onboarding_focus + 3) % 4)) ;;
+    $'\e[B' | j) onboarding_focus=$(((onboarding_focus + 1) % 4)) ;;
+    $'\e' | q) exit 130 ;;
+    '')
+      case $onboarding_focus in
+      0)
+        if [[ $distraction_expanded == true ]]; then
+          distraction_expanded=false
+        else
+          distraction_expanded=true
+          adult_expanded=false
+          technical_expanded=false
+        fi
+        ;;
+      1)
+        if [[ $adult_expanded == true ]]; then
+          adult_expanded=false
+        else
+          distraction_expanded=false
+          adult_expanded=true
+          technical_expanded=false
+        fi
+        ;;
+      2)
+        if [[ $technical_expanded == true ]]; then
+          technical_expanded=false
+        else
+          distraction_expanded=false
+          adult_expanded=false
+          technical_expanded=true
+        fi
+        ;;
+      3) return ;;
+      esac
+      ;;
+    esac
+  done
+}
+
+show_password_intro() {
+  clear_onboarding
+  show_clarity_logo
+  printf '\nGet Focused. Get Productive. Get Clarity.\n\n\n\n'
+  section_header 'CREATE CLARITY PASSWORD'
+  cat <<'INTRO'
+
+
+Choose a NEW Clarity password. (Not your Linux login password)
+
+Clarity password is required to turn Clarity toggle off or alter Clarity
+schedule or whitelist. Many people have a trusted friend enter the password.
+
+
+
+INTRO
+}
+
+show_adult_choice_intro() {
+  clear_onboarding
+  show_clarity_logo
+  printf '\nGet Focused. Get Productive. Get Clarity.\n\n\n\n'
+  section_header 'ADULT BLACKLIST OPTION'
+  cat <<'INTRO'
+
+
+Choose whether to enable the permanent adult blacklist:
+(This initial choice is separate from the Clarity toggle and focus schedule)
+
+INTRO
 }
 
 [[ -t 0 && -t 1 ]] || fail "run this installer in an interactive terminal"
@@ -53,74 +272,12 @@ if [[ -x $ROOT_HELPER ]]; then
   sudo -n "$ROOT_HELPER" upgrade "$SCRIPT_DIR"
   omarchy plugin enable "$PLUGIN_ID" right >/dev/null 2>&1 || true
   omarchy-shell shell rescanPlugins >/dev/null 2>&1 || true
-  printf '\nClarity is upgraded; your password, schedule, and custom sites were preserved.\n'
+  printf '\nClarity is ready with your clarity password, schedule off, full list, and no whitelist yet.\n'
   exit 0
 fi
 
-show_clarity_logo
-
-cat <<'INTRO'
-CLARITY SETUP
-─────────────
-Get focused. Be productive. Get Clarity.
-
-Clarity does 2 things:
-
-1. TURN DISTRACTIONS ON & OFF
-   Toggle on/off or schedule access to distracting websites. (i.e. Social
-   Media that scrolls infinitely). You must have a unique Clarity Password
-   to manually toggle the switch off. You can specify which sites this
-   includes after setup.
-
-2. BLOCK ADULT SITES (Optional)
-   The permanent adult blacklist is a one-time setup choice. If enabled, it
-   is never affected by the Clarity toggle or schedule and remains until
-   uninstall. If you opt out, you can also simply add adult sites to the
-   regular "distractions" list to toggle on/off normally with others.
-
-OTHER THINGS TO KNOW:
-  • add root-owned sections to /etc/hosts;
-  • permanently merge three massive, maintained adult-domain feeds;
-  • aggressively block social, video, shopping, gambling, torrent, news,
-    entertainment, and other output killers while focus mode is enabled;
-  • explicitly allow major AI tools such as ChatGPT and Claude;
-  • start with the distraction block enabled;
-  • install minute-by-minute schedule reconciliation and weekly list updates.
-
-─────────────
-
-SET YOUR CLARITY PASSWORD
-
-Choose a NEW Clarity password (not your Linux login password).
-It is required to turn Clarity off or alter its schedule/site list.
-
-The permanent adult blacklist is a one-time setup choice. If enabled, it is
-never affected by the Clarity toggle or schedule and remains until uninstall.
-
-INTRO
-
-if command -v gum >/dev/null 2>&1; then
-  adult_choice=$(printf '%s\n' \
-    "Yes, enable permanent adult blacklist" \
-    "Skip permanent blacklist (Add to distractions later)" |
-    gum choose) || exit 130
-else
-  while true; do
-    printf '%s\n' \
-      "> Yes, enable permanent adult blacklist" \
-      "  Skip permanent blacklist (Add to distractions later)"
-    read -r -p "Choose permanent blacklist option [yes/skip]: " answer
-    case ${answer,,} in
-    y | yes) adult_choice="Yes, enable permanent adult blacklist"; break ;;
-    n | no | s | skip) adult_choice="Skip permanent blacklist (Add to distractions later)"; break ;;
-    esac
-  done
-fi
-if [[ $adult_choice == Yes,* ]]; then
-  adult_state=enabled
-else
-  adult_state=disabled
-fi
+run_onboarding
+show_password_intro
 
 while true; do
   if command -v gum >/dev/null 2>&1; then
@@ -137,6 +294,30 @@ while true; do
   break
 done
 unset confirmation
+
+show_adult_choice_intro
+if command -v gum >/dev/null 2>&1; then
+  adult_choice=$(printf '%s\n' \
+    "YES - Enable persistent adult blacklist" \
+    "NO - Skip persistent blacklist" |
+    gum choose --header "") || exit 130
+else
+  printf '%s\n' \
+    "> YES - Enable persistent adult blacklist" \
+    "  NO - Skip persistent blacklist"
+  while true; do
+    read -r -p "Choose [yes/no]: " answer
+    case ${answer,,} in
+    y | yes) adult_choice="YES - Enable persistent adult blacklist"; break ;;
+    n | no) adult_choice="NO - Skip persistent blacklist"; break ;;
+    esac
+  done
+fi
+if [[ $adult_choice == YES* ]]; then
+  adult_state=enabled
+else
+  adult_state=disabled
+fi
 
 printf 'Authorizing one-time system installation…\n'
 sudo -v

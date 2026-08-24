@@ -36,6 +36,14 @@ DEFAULT_DISTRACTION_URLS = [
     "https://blocklistproject.github.io/Lists/alt-version/torrent-nl.txt",
     "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/native.amazon-onlydomains.txt",
 ]
+BLOCK_CATEGORY_ORDER = (
+    "Adult",
+    "Social & Feeds",
+    "Video & Streaming",
+    "Shopping",
+    "Gambling",
+    "Torrents",
+)
 
 
 def configured_urls(plural_name: str, legacy_name: str, defaults: list[str]) -> list[str]:
@@ -67,11 +75,21 @@ ADULT_FILE = STATE_DIR / "adult-domains.txt"
 DISTRACTION_FEED_FILE = STATE_DIR / "distraction-feed-domains.txt"
 SITES_FILE = STATE_DIR / "distractions.txt"
 ALLOWLIST_FILE = STATE_DIR / "ai-allowlist.txt"
+FOCUS_ALLOWLIST_FILE = STATE_DIR / "focus-allowlist.txt"
+USER_ALLOWLIST_FILE = STATE_DIR / "whitelist.txt"
 BACKUP_FILE = STATE_DIR / "hosts.pre-clarity"
+BACKUP_DIR = STATE_DIR / "system-backups"
+BACKUP_MANIFEST = STATE_DIR / "backup-manifest.json"
 HOSTS_FILE = rooted("/etc/hosts")
 ROOT_HELPER = rooted("/usr/local/lib/clarity/clarity-root")
 SUDOERS_FILE = rooted("/etc/sudoers.d/clarity")
 SYSTEMD_DIR = rooted("/etc/systemd/system")
+SYSTEMD_NAMES = (
+    "clarity-reconcile.service",
+    "clarity-reconcile.timer",
+    "clarity-adult-list.service",
+    "clarity-adult-list.timer",
+)
 
 PERMANENT_BEGIN = "# BEGIN CLARITY PERMANENT — managed; do not edit"
 PERMANENT_END = "# END CLARITY PERMANENT"
@@ -133,6 +151,49 @@ def read_json(path: Path, default: dict | None = None) -> dict:
     if not isinstance(value, dict):
         fail(f"invalid Clarity state in {path}")
     return value
+
+
+def system_backup_targets() -> list[Path]:
+    return [
+        HOSTS_FILE,
+        SUDOERS_FILE,
+        *(SYSTEMD_DIR / name for name in SYSTEMD_NAMES),
+        ROOT_HELPER,
+    ]
+
+
+def capture_system_backups(legacy_install: bool = False) -> None:
+    if BACKUP_MANIFEST.exists():
+        return
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    entries: dict[str, dict] = {}
+    for index, target in enumerate(system_backup_targets()):
+        target_key = str(target)
+        if legacy_install and target != HOSTS_FILE:
+            entries[target_key] = {"existed": False}
+            continue
+
+        source = target
+        if target == HOSTS_FILE and BACKUP_FILE.exists():
+            source = BACKUP_FILE
+        if not source.exists():
+            entries[target_key] = {"existed": False}
+            continue
+        if not source.is_file():
+            fail(f"cannot back up non-file system path: {target}")
+
+        backup = BACKUP_FILE if target == HOSTS_FILE else BACKUP_DIR / f"{index:02d}-{target.name}"
+        if source != backup:
+            shutil.copy2(source, backup)
+        source_stat = source.stat()
+        entries[target_key] = {
+            "existed": True,
+            "backup": str(backup),
+            "mode": stat.S_IMODE(source_stat.st_mode),
+            "uid": source_stat.st_uid,
+            "gid": source_stat.st_gid,
+        }
+    write_json(BACKUP_MANIFEST, {"version": 1, "files": entries}, 0o600)
 
 
 def normalize_domain(raw: str, strict: bool = True) -> str | None:
@@ -207,7 +268,11 @@ def expanded_distraction_domains(domains: list[str]) -> list[str]:
 
 
 def effective_distraction_domains() -> list[str]:
-    allowlist = read_domains(ALLOWLIST_FILE)
+    allowlist = sorted(
+        set(read_domains(ALLOWLIST_FILE))
+        | set(read_domains(FOCUS_ALLOWLIST_FILE))
+        | set(read_domains(USER_ALLOWLIST_FILE))
+    )
     feed = without_allowlisted(read_domains(DISTRACTION_FEED_FILE), allowlist)
     curated = without_allowlisted(read_domains(SITES_FILE), allowlist)
     return sorted(set(feed) | set(expanded_distraction_domains(curated)))
@@ -250,18 +315,57 @@ def parse_time(value: str) -> tuple[int, int]:
     return int(hour), int(minute)
 
 
-def inside_schedule(config: dict, now: dt.datetime | None = None) -> bool:
-    current = now or dt.datetime.now().astimezone()
-    start_hour, start_minute = parse_time(str(config.get("scheduleStart", "09:00")))
-    end_hour, end_minute = parse_time(str(config.get("scheduleEnd", "17:00")))
-    current_minutes = current.hour * 60 + current.minute
+def schedule_windows(config: dict) -> list[dict[str, str]]:
+    raw_windows = config.get("scheduleWindows")
+    if isinstance(raw_windows, list):
+        windows: list[dict[str, str]] = []
+        for raw in raw_windows:
+            if not isinstance(raw, dict):
+                fail("invalid schedule window")
+            start = str(raw.get("start", ""))
+            end = str(raw.get("end", ""))
+            parse_time(start)
+            parse_time(end)
+            windows.append({"start": start, "end": end})
+        return windows
+    start = str(config.get("scheduleStart", "09:00"))
+    end = str(config.get("scheduleEnd", "17:00"))
+    parse_time(start)
+    parse_time(end)
+    return [{"start": start, "end": end}]
+
+
+def window_intervals(start_value: str, end_value: str) -> list[tuple[int, int]]:
+    start_hour, start_minute = parse_time(start_value)
+    end_hour, end_minute = parse_time(end_value)
     start = start_hour * 60 + start_minute
     end = end_hour * 60 + end_minute
     if start == end:
-        return True
+        return [(0, 24 * 60)]
     if start < end:
-        return start <= current_minutes < end
-    return current_minutes >= start or current_minutes < end
+        return [(start, end)]
+    return [(start, 24 * 60), (0, end)]
+
+
+def windows_overlap(first: dict[str, str], second: dict[str, str]) -> bool:
+    return any(
+        max(first_start, second_start) < min(first_end, second_end)
+        for first_start, first_end in window_intervals(first["start"], first["end"])
+        for second_start, second_end in window_intervals(second["start"], second["end"])
+    )
+
+
+def inside_window(start_value: str, end_value: str, current_minutes: int) -> bool:
+    return any(start <= current_minutes < end for start, end in window_intervals(start_value, end_value))
+
+
+def inside_schedule(config: dict, now: dt.datetime | None = None) -> bool:
+    current = now or dt.datetime.now().astimezone()
+    current_minutes = current.hour * 60 + current.minute
+    return any(
+        inside_window(window["start"], window["end"], current_minutes)
+        for window in schedule_windows(config)
+    )
 
 
 def effective_active(config: dict, now: dt.datetime | None = None) -> bool:
@@ -349,9 +453,28 @@ def read_password_from_stdin() -> str:
     return password.rstrip("\r\n")
 
 
-def download_sources(urls: list[str], label: str) -> tuple[list[str], list[str]]:
+def focus_category_for_url(url: str) -> str:
+    lowered = url.lower()
+    for needle, category in (
+        ("youtube", "Video & Streaming"),
+        ("amazon", "Shopping"),
+        ("gambling", "Gambling"),
+        ("torrent", "Torrents"),
+        ("facebook", "Social & Feeds"),
+        ("tiktok", "Social & Feeds"),
+        ("twitter", "Social & Feeds"),
+        ("whatsapp", "Social & Feeds"),
+        ("social", "Social & Feeds"),
+    ):
+        if needle in lowered:
+            return category
+    return "Social & Feeds"
+
+
+def download_sources(urls: list[str], label: str) -> tuple[list[str], list[str], dict[str, list[str]]]:
     merged: set[str] = set()
     successful: list[str] = []
+    source_domains: dict[str, list[str]] = {}
     errors: list[str] = []
     for url in urls:
         request = urllib.request.Request(url, headers={"User-Agent": "omarchy-clarity/0.2"})
@@ -363,23 +486,32 @@ def download_sources(urls: list[str], label: str) -> tuple[list[str], list[str]]
                 raise ValueError("source contained no valid domains")
             merged.update(domains)
             successful.append(url)
+            source_domains[url] = domains
         except Exception as error:
             errors.append(f"{url}: {error}")
     if errors:
         print(f"clarity: warning: {label} source failures:\n  " + "\n  ".join(errors), file=sys.stderr)
     if not successful:
         fail(f"could not download any {label} blocklist source")
-    return sorted(merged), successful
+    return sorted(merged), successful, source_domains
+
+
+def block_category_counts(adult_domains: list[str], focus_sources: dict[str, list[str]], focus_exclusions: list[str]) -> dict[str, int]:
+    grouped: dict[str, set[str]] = {category: set() for category in BLOCK_CATEGORY_ORDER}
+    grouped["Adult"].update(adult_domains)
+    for url, domains in focus_sources.items():
+        grouped[focus_category_for_url(url)].update(without_allowlisted(domains, focus_exclusions))
+    return {category: len(grouped[category]) for category in BLOCK_CATEGORY_ORDER}
 
 
 def update_lists(apply: bool = True) -> tuple[int, int]:
     config = read_json(CONFIG_FILE, {})
     adult_enabled = bool(config.get("adultBlockingEnabled", True))
     if adult_enabled:
-        adult_domains, adult_sources = download_sources(ADULT_URLS, "adult")
+        adult_domains, adult_sources, _adult_source_domains = download_sources(ADULT_URLS, "adult")
     else:
         adult_domains, adult_sources = [], []
-    distraction_domains, distraction_sources = download_sources(DISTRACTION_URLS, "focus")
+    distraction_domains, distraction_sources, focus_source_domains = download_sources(DISTRACTION_URLS, "focus")
     allowlist = read_domains(ALLOWLIST_FILE)
     adult_domains = without_allowlisted(adult_domains, allowlist)
     distraction_domains = without_allowlisted(distraction_domains, allowlist)
@@ -395,6 +527,15 @@ def update_lists(apply: bool = True) -> tuple[int, int]:
     config["listsUpdated"] = updated
     config["adultSources"] = adult_sources
     config["distractionSources"] = distraction_sources
+    config["adultCount"] = len(adult_domains)
+    config["focusFeedCount"] = len(distraction_domains)
+    focus_exclusions = sorted(set(allowlist) | set(read_domains(FOCUS_ALLOWLIST_FILE)))
+    config["categoryCounts"] = block_category_counts(adult_domains, focus_source_domains, focus_exclusions)
+    config["distractionCount"] = len(effective_distraction_domains())
+    config["curatedCount"] = len(read_domains(SITES_FILE))
+    config["aiAllowCount"] = len(read_domains(ALLOWLIST_FILE))
+    config["focusAllowCount"] = len(read_domains(FOCUS_ALLOWLIST_FILE))
+    config["whitelistCount"] = len(read_domains(USER_ALLOWLIST_FILE))
     write_json(CONFIG_FILE, config)
     if apply and PASSWORD_FILE.exists():
         apply_hosts()
@@ -404,6 +545,29 @@ def update_lists(apply: bool = True) -> tuple[int, int]:
 def update_adult_list(apply: bool = True) -> int:
     # Backward-compatible alias for v0.1 callers.
     return update_lists(apply)[0]
+
+
+def enable_permanent_adult_blocking() -> int:
+    config = read_json(CONFIG_FILE)
+    if bool(config.get("adultBlockingEnabled", True)):
+        return cached_count(config, "adultCount", lambda: len(read_domains(ADULT_FILE)))
+
+    config["adultBlockingEnabled"] = True
+    write_json(CONFIG_FILE, config)
+    try:
+        adult_count, _focus_count = update_lists()
+        return adult_count
+    except Exception:
+        rollback = read_json(CONFIG_FILE, config)
+        rollback["adultBlockingEnabled"] = False
+        rollback["adultCount"] = 0
+        category_counts = rollback.get("categoryCounts")
+        if isinstance(category_counts, dict):
+            category_counts["Adult"] = 0
+        write_json(CONFIG_FILE, rollback)
+        atomic_write(ADULT_FILE, "")
+        apply_hosts()
+        raise
 
 
 def run_systemctl(*args: str, check: bool = True) -> None:
@@ -423,12 +587,7 @@ def install_system_files(plugin_dir: Path, owner: str) -> None:
     os.chmod(ROOT_HELPER, 0o755)
 
     SYSTEMD_DIR.mkdir(parents=True, exist_ok=True)
-    for name in (
-        "clarity-reconcile.service",
-        "clarity-reconcile.timer",
-        "clarity-adult-list.service",
-        "clarity-adult-list.timer",
-    ):
+    for name in SYSTEMD_NAMES:
         shutil.copyfile(source_systemd / name, SYSTEMD_DIR / name)
         os.chmod(SYSTEMD_DIR / name, 0o644)
 
@@ -449,14 +608,19 @@ def install_system_files(plugin_dir: Path, owner: str) -> None:
 def sync_bundled_lists(plugin_dir: Path, merge_sites: bool) -> None:
     defaults = plugin_dir / "config" / "distractions.txt"
     ai_allowlist = plugin_dir / "config" / "ai-allowlist.txt"
-    if not defaults.is_file() or not ai_allowlist.is_file():
+    focus_allowlist = plugin_dir / "config" / "focus-allowlist.txt"
+    if not defaults.is_file() or not ai_allowlist.is_file() or not focus_allowlist.is_file():
         fail("plugin blocklist configuration is incomplete")
     default_domains = parse_domain_lines(defaults.read_text(encoding="utf-8"))
     if merge_sites:
         default_domains = sorted(set(default_domains) | set(read_domains(SITES_FILE)))
     allow_domains = parse_domain_lines(ai_allowlist.read_text(encoding="utf-8"))
+    focus_allow_domains = parse_domain_lines(focus_allowlist.read_text(encoding="utf-8"))
     atomic_write(SITES_FILE, "\n".join(default_domains) + "\n", 0o644)
     atomic_write(ALLOWLIST_FILE, "\n".join(allow_domains) + "\n", 0o644)
+    atomic_write(FOCUS_ALLOWLIST_FILE, "\n".join(focus_allow_domains) + "\n", 0o644)
+    if not USER_ALLOWLIST_FILE.exists():
+        atomic_write(USER_ALLOWLIST_FILE, "", 0o644)
 
 
 def bootstrap(plugin_dir_arg: str, owner: str, adult_state: str) -> None:
@@ -467,14 +631,15 @@ def bootstrap(plugin_dir_arg: str, owner: str, adult_state: str) -> None:
     plugin_dir = Path(plugin_dir_arg).resolve()
     password = read_password_from_stdin()
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    if HOSTS_FILE.exists() and not BACKUP_FILE.exists():
-        shutil.copy2(HOSTS_FILE, BACKUP_FILE)
+    capture_system_backups()
 
     config = {
         "manualEnabled": True,
         "scheduleEnabled": False,
         "scheduleStart": "09:00",
         "scheduleEnd": "17:00",
+        "scheduleWindows": [],
+        "scheduleConfigured": False,
         "adultBlockingEnabled": adult_state == "enabled",
         "adultUpdated": "",
         "listsUpdated": "",
@@ -503,6 +668,21 @@ def upgrade(plugin_dir_arg: str) -> None:
     plugin_dir = Path(plugin_dir_arg).resolve()
     config = read_json(CONFIG_FILE)
     owner = str(config.get("owner", ""))
+    capture_system_backups(legacy_install=True)
+    config_changed = False
+    if "scheduleWindows" not in config:
+        config["scheduleWindows"] = schedule_windows(config)
+        config_changed = True
+    if "scheduleConfigured" not in config:
+        windows = schedule_windows(config)
+        if windows == [{"start": "09:00", "end": "17:00"}]:
+            config["scheduleWindows"] = []
+            config["scheduleEnabled"] = False
+            windows = []
+        config["scheduleConfigured"] = bool(windows)
+        config_changed = True
+    if config_changed:
+        write_json(CONFIG_FILE, config)
     sync_bundled_lists(plugin_dir, merge_sites=True)
     adult_count, focus_feed_count = update_lists(apply=False)
     install_system_files(plugin_dir, owner)
@@ -517,25 +697,54 @@ def upgrade(plugin_dir_arg: str) -> None:
     print(f"Clarity upgraded: {permanent_summary}; focus feeds contain {focus_feed_count} domains.")
 
 
+def cached_count(config: dict, key: str, fallback) -> int:
+    value = config.get(key)
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return int(fallback())
+
+
 def status() -> dict:
     config = read_json(CONFIG_FILE)
     active = effective_active(config)
+    category_counts = config.get("categoryCounts")
+    if not isinstance(category_counts, dict):
+        category_counts = {category: 0 for category in BLOCK_CATEGORY_ORDER}
+        category_counts["Adult"] = cached_count(
+            config,
+            "adultCount",
+            lambda: len(without_allowlisted(read_domains(ADULT_FILE), read_domains(ALLOWLIST_FILE))),
+        )
     if bool(config.get("scheduleEnabled", False)):
         reason = "Inside focus window" if active else "Outside focus window"
     else:
         reason = "Manual focus enabled" if active else "Manual focus disabled"
     return {
         "installed": True,
+        "backupsReady": BACKUP_MANIFEST.is_file(),
         "active": active,
         "manualEnabled": bool(config.get("manualEnabled", True)),
         "scheduleEnabled": bool(config.get("scheduleEnabled", False)),
         "scheduleStart": str(config.get("scheduleStart", "09:00")),
         "scheduleEnd": str(config.get("scheduleEnd", "17:00")),
+        "scheduleWindows": schedule_windows(config),
         "permanentEnabled": bool(config.get("adultBlockingEnabled", True)),
-        "permanentCount": len(without_allowlisted(read_domains(ADULT_FILE), read_domains(ALLOWLIST_FILE))),
-        "distractionCount": len(effective_distraction_domains()),
-        "curatedCount": len(read_domains(SITES_FILE)),
-        "aiAllowCount": len(read_domains(ALLOWLIST_FILE)),
+        "permanentCount": cached_count(
+            config,
+            "adultCount",
+            lambda: len(without_allowlisted(read_domains(ADULT_FILE), read_domains(ALLOWLIST_FILE))),
+        ),
+        "distractionCount": cached_count(config, "distractionCount", lambda: len(effective_distraction_domains())),
+        "curatedCount": cached_count(config, "curatedCount", lambda: len(read_domains(SITES_FILE))),
+        "aiAllowCount": cached_count(config, "aiAllowCount", lambda: len(read_domains(ALLOWLIST_FILE))),
+        "focusAllowCount": cached_count(
+            config, "focusAllowCount", lambda: len(read_domains(FOCUS_ALLOWLIST_FILE))
+        ),
+        "whitelistCount": cached_count(config, "whitelistCount", lambda: len(read_domains(USER_ALLOWLIST_FILE))),
+        "whitelistSites": read_domains(USER_ALLOWLIST_FILE),
+        "categoryCounts": {
+            category: int(category_counts.get(category, 0)) for category in BLOCK_CATEGORY_ORDER
+        },
         "adultUpdated": str(config.get("adultUpdated", "")),
         "listsUpdated": str(config.get("listsUpdated", config.get("adultUpdated", ""))),
         "reason": reason,
@@ -559,6 +768,7 @@ def set_manual(enabled: bool, password: str | None = None) -> None:
 
 
 def set_schedule(enabled: bool, start: str, end: str, password: str) -> None:
+    """Backward-compatible single-window schedule setter."""
     verify_password(password)
     parse_time(start)
     parse_time(end)
@@ -566,18 +776,190 @@ def set_schedule(enabled: bool, start: str, end: str, password: str) -> None:
     config["scheduleEnabled"] = enabled
     config["scheduleStart"] = start
     config["scheduleEnd"] = end
+    config["scheduleWindows"] = [{"start": start, "end": end}]
+    config["scheduleConfigured"] = True
     write_json(CONFIG_FILE, config)
     apply_hosts()
 
 
-def set_sites(password: str, content: str) -> int:
+def set_schedule_enabled(enabled: bool, password: str) -> None:
+    verify_password(password)
+    config = read_json(CONFIG_FILE)
+    if enabled and not schedule_windows(config):
+        fail("add at least one schedule window before enabling the schedule")
+    config["scheduleEnabled"] = enabled
+    write_json(CONFIG_FILE, config)
+    apply_hosts()
+
+
+def add_schedule_window(start: str, end: str, password: str) -> int:
+    verify_password(password)
+    parse_time(start)
+    parse_time(end)
+    config = read_json(CONFIG_FILE)
+    windows = schedule_windows(config)
+    was_empty = not windows
+    window = {"start": start, "end": end}
+    if any(windows_overlap(window, existing) for existing in windows):
+        fail("schedule windows may not overlap")
+    if len(windows) >= 3:
+        fail("Clarity supports up to three schedule windows")
+    windows.append(window)
+    config["scheduleWindows"] = windows
+    config["scheduleStart"] = windows[0]["start"]
+    config["scheduleEnd"] = windows[0]["end"]
+    config["scheduleConfigured"] = True
+    if was_empty:
+        config["scheduleEnabled"] = True
+    write_json(CONFIG_FILE, config)
+    apply_hosts()
+    return windows.index(window)
+
+
+def edit_schedule_window(index: int, start: str, end: str, password: str) -> None:
+    verify_password(password)
+    parse_time(start)
+    parse_time(end)
+    config = read_json(CONFIG_FILE)
+    windows = schedule_windows(config)
+    if index < 0 or index >= len(windows):
+        fail("schedule window does not exist")
+    replacement = {"start": start, "end": end}
+    if any(windows_overlap(replacement, existing) for slot, existing in enumerate(windows) if slot != index):
+        fail("schedule windows may not overlap")
+    windows[index] = replacement
+    config["scheduleWindows"] = windows
+    config["scheduleStart"] = windows[0]["start"]
+    config["scheduleEnd"] = windows[0]["end"]
+    config["scheduleConfigured"] = True
+    write_json(CONFIG_FILE, config)
+    apply_hosts()
+
+
+def remove_schedule_window(index: int, password: str) -> None:
+    verify_password(password)
+    config = read_json(CONFIG_FILE)
+    windows = schedule_windows(config)
+    if index < 0 or index >= len(windows):
+        fail("schedule window does not exist")
+    windows.pop(index)
+    config["scheduleWindows"] = windows
+    config["scheduleConfigured"] = True
+    if windows:
+        config["scheduleStart"] = windows[0]["start"]
+        config["scheduleEnd"] = windows[0]["end"]
+    else:
+        config["scheduleEnabled"] = False
+    write_json(CONFIG_FILE, config)
+    apply_hosts()
+
+
+def update_focus_count_cache() -> None:
+    config = read_json(CONFIG_FILE)
+    config["distractionCount"] = len(effective_distraction_domains())
+    config["whitelistCount"] = len(read_domains(USER_ALLOWLIST_FILE))
+    write_json(CONFIG_FILE, config)
+
+
+def set_whitelist(password: str, content: str) -> int:
     verify_password(password)
     domains = parse_domain_lines(content)
-    if not domains:
-        fail("the distraction list may not be empty")
-    atomic_write(SITES_FILE, "\n".join(domains) + "\n", 0o644)
+    atomic_write(USER_ALLOWLIST_FILE, ("\n".join(domains) + "\n") if domains else "", 0o644)
+    update_focus_count_cache()
     apply_hosts()
     return len(domains)
+
+
+def add_whitelist_site(password: str, value: str) -> tuple[str, int]:
+    verify_password(password)
+    domains = parse_domain_lines(value)
+    if len(domains) != 1:
+        fail("enter one valid website URL or domain")
+    domain = domains[0]
+    combined = sorted(set(read_domains(USER_ALLOWLIST_FILE)) | {domain})
+    atomic_write(USER_ALLOWLIST_FILE, "\n".join(combined) + "\n", 0o644)
+    update_focus_count_cache()
+    apply_hosts()
+    return domain, len(combined)
+
+
+def remove_whitelist_site(password: str, value: str) -> tuple[str, int]:
+    verify_password(password)
+    domains = parse_domain_lines(value)
+    if len(domains) != 1:
+        fail("select one valid whitelisted domain")
+    domain = domains[0]
+    current = set(read_domains(USER_ALLOWLIST_FILE))
+    if domain not in current:
+        fail(f"{domain} is not in the focus whitelist")
+    current.remove(domain)
+    remaining = sorted(current)
+    atomic_write(USER_ALLOWLIST_FILE, ("\n".join(remaining) + "\n") if remaining else "", 0o644)
+    update_focus_count_cache()
+    apply_hosts()
+    return domain, len(remaining)
+
+
+def restore_file(backup: Path, target: Path, mode: int, uid: int, gid: int) -> None:
+    if not backup.is_file():
+        fail(f"required backup is missing: {backup}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{target.name}.restore.", dir=target.parent)
+    os.close(fd)
+    tmp = Path(tmp_name)
+    try:
+        shutil.copy2(backup, tmp)
+        os.chmod(tmp, mode)
+        if not TEST_ROOT:
+            os.chown(tmp, uid, gid)
+        os.replace(tmp, target)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def restore_system_backups() -> None:
+    if not BACKUP_MANIFEST.exists():
+        # Backward compatibility for installations created before manifests.
+        if BACKUP_FILE.exists():
+            backup_stat = BACKUP_FILE.stat()
+            restore_file(
+                BACKUP_FILE,
+                HOSTS_FILE,
+                stat.S_IMODE(backup_stat.st_mode),
+                backup_stat.st_uid,
+                backup_stat.st_gid,
+            )
+        else:
+            remove_managed_hosts()
+        for target in system_backup_targets()[1:]:
+            target.unlink(missing_ok=True)
+        return
+
+    manifest = read_json(BACKUP_MANIFEST)
+    entries = manifest.get("files")
+    if manifest.get("version") != 1 or not isinstance(entries, dict):
+        fail("invalid Clarity backup manifest")
+
+    allowed_backups = {BACKUP_FILE.resolve()}
+    if BACKUP_DIR.exists():
+        allowed_backups.update(path.resolve() for path in BACKUP_DIR.iterdir() if path.is_file())
+    for target in system_backup_targets():
+        entry = entries.get(str(target))
+        if not isinstance(entry, dict) or not isinstance(entry.get("existed"), bool):
+            fail(f"backup manifest is missing {target}")
+        if entry["existed"]:
+            backup = Path(str(entry.get("backup", "")))
+            if backup.resolve() not in allowed_backups:
+                fail(f"unsafe backup path for {target}")
+            restore_file(
+                backup,
+                target,
+                int(entry.get("mode", 0o644)),
+                int(entry.get("uid", 0)),
+                int(entry.get("gid", 0)),
+            )
+        else:
+            target.unlink(missing_ok=True)
 
 
 def remove_managed_hosts() -> None:
@@ -597,19 +979,11 @@ def remove_managed_hosts() -> None:
 
 def uninstall() -> None:
     run_systemctl("disable", "--now", "clarity-reconcile.timer", "clarity-adult-list.timer", check=False)
-    remove_managed_hosts()
-    for name in (
-        "clarity-reconcile.service",
-        "clarity-reconcile.timer",
-        "clarity-adult-list.service",
-        "clarity-adult-list.timer",
-    ):
-        (SYSTEMD_DIR / name).unlink(missing_ok=True)
+    restore_system_backups()
     run_systemctl("daemon-reload", check=False)
-    SUDOERS_FILE.unlink(missing_ok=True)
+    flush_dns()
     shutil.rmtree(STATE_DIR, ignore_errors=True)
-    ROOT_HELPER.unlink(missing_ok=True)
-    print("Clarity system blocking removed.")
+    print("Clarity system files restored; setup state removed.")
 
 
 def usage() -> str:
@@ -622,12 +996,20 @@ Commands:
   status                          Print JSON state
   enable                          Enable distraction blocking
   disable                         Disable blocking; password on stdin
-  schedule-set STATE START END    Set schedule; password on stdin
-  sites-list                      Print distraction domains
-  sites-set                       Replace domains; password first on stdin
+  schedule-set STATE START END    Set one window (backward compatible)
+  schedule-state STATE            Enable/disable windows; password on stdin
+  schedule-window-add START END   Add a daily window; password on stdin
+  schedule-window-edit INDEX START END
+                                  Edit a window; password on stdin
+  schedule-window-remove INDEX    Remove a window; password on stdin
+  whitelist-list                  Print focus whitelist domains
+  whitelist-set                   Replace whitelist; password first on stdin
+  whitelist-add SITE              Add one URL/domain; password on stdin
+  whitelist-remove SITE           Remove one domain; password on stdin
   reconcile                       Apply current/scheduled state
   update-lists                    Refresh permanent and focus blocklists
   update-adult                    Backward-compatible alias for update-lists
+  enable-adult                    Permanently enable adult blocking until uninstall
   uninstall                       Remove all Clarity system integration
 """
 
@@ -649,22 +1031,43 @@ def main(argv: list[str]) -> int:
         print("Clarity is on.")
     elif command == "disable" and not args:
         set_manual(False, read_password_from_stdin())
-        print("Clarity is off; the permanent adult block remains active.")
+        print(" Success. Clarity Blocker is off.")
     elif command == "schedule-set" and len(args) == 3 and args[0] in {"enabled", "disabled"}:
         set_schedule(args[0] == "enabled", args[1], args[2], read_password_from_stdin())
         print(f"Schedule {args[0]} ({args[1]}–{args[2]}).")
-    elif command == "sites-list" and not args:
-        print(SITES_FILE.read_text(encoding="utf-8"), end="")
-    elif command == "sites-set" and not args:
+    elif command == "schedule-state" and len(args) == 1 and args[0] in {"enabled", "disabled"}:
+        set_schedule_enabled(args[0] == "enabled", read_password_from_stdin())
+        print(f"Schedule {args[0]}.")
+    elif command == "schedule-window-add" and len(args) == 2:
+        index = add_schedule_window(args[0], args[1], read_password_from_stdin())
+        print(f"Added schedule window {index + 1} ({args[0]}–{args[1]}).")
+    elif command == "schedule-window-edit" and len(args) == 3 and args[0].isdigit():
+        edit_schedule_window(int(args[0]), args[1], args[2], read_password_from_stdin())
+        print(f"Updated schedule window ({args[1]}–{args[2]}).")
+    elif command == "schedule-window-remove" and len(args) == 1 and args[0].isdigit():
+        remove_schedule_window(int(args[0]), read_password_from_stdin())
+        print("Removed schedule window.")
+    elif command == "whitelist-list" and not args:
+        print(USER_ALLOWLIST_FILE.read_text(encoding="utf-8"), end="")
+    elif command == "whitelist-set" and not args:
         password = read_password_from_stdin()
-        count = set_sites(password, sys.stdin.read())
-        print(f"Saved {count} distracting domains.")
+        count = set_whitelist(password, sys.stdin.read())
+        print(f"Saved {count} whitelisted domains for focus blocking.")
+    elif command == "whitelist-add" and len(args) == 1:
+        domain, count = add_whitelist_site(read_password_from_stdin(), args[0])
+        print(f"Whitelisted {domain} for focus blocking ({count} total).")
+    elif command == "whitelist-remove" and len(args) == 1:
+        domain, count = remove_whitelist_site(read_password_from_stdin(), args[0])
+        print(f"Removed {domain} from the focus whitelist ({count} remaining).")
     elif command == "reconcile" and not args:
         changed = apply_hosts()
         print("Clarity hosts updated." if changed else "Clarity hosts already current.")
     elif command in {"update-lists", "update-adult"} and not args:
         adult_count, focus_count = update_lists()
         print(f"Updated blocklists ({adult_count} permanent, {focus_count} focus-feed domains).")
+    elif command == "enable-adult" and not args:
+        adult_count = enable_permanent_adult_blocking()
+        print(f"Persistent adult blocking enabled ({adult_count} domains).")
     elif command == "uninstall" and not args:
         uninstall()
     else:

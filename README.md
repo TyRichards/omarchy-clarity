@@ -8,55 +8,87 @@
 by Ty Richards
 ```
 
+<p align="center">
+  <img src="assets/clarity-demo.gif" alt="Clarity focus controls, schedules, and password-protected actions" width="100%">
+</p>
+
 # omarchy-clarity
 
-An aggressive output guard for Omarchy’s top-right bar. **Clarity** can maintain a massive permanent adult-site blacklist and blocks social feeds, shopping, video, gambling, news, games, and other productivity killers while focus mode is active—without blocking major AI tools.
+**Get Focused. Get Productive. Get Clarity.**
 
-## Protection layers
+Clarity is a focus-driven productivity tool for Omarchy. It puts deliberate friction between you and the sites that steal your day, helping you stop scrolling, protect deep-work time, and get shit done.
 
-### 1. Permanent adult blacklist — optional at first setup
+<p align="center">
+  <img src="preview.png" alt="Clarity enabled with live blocked-site statistics" width="100%">
+</p>
 
-The installer explicitly asks whether to enable permanent adult blocking.
+## What Clarity does
 
-- **Opt in:** Clarity downloads, validates, merges, de-duplicates, and locally stores three maintained feeds:
-  - [Block List Project Porn](https://github.com/blocklistproject/Lists)
-  - [HaGeZi NSFW](https://github.com/hagezi/dns-blocklists)
-  - [StevenBlack `porn-only`](https://github.com/StevenBlack/hosts/tree/master/alternates/porn-only)
-- **Opt out:** no adult feed is downloaded or applied.
+### 1. Turn distracting sites on and off—or schedule them
 
-This is a one-time setup choice. When enabled, the permanent blacklist is never affected by the main Clarity switch or schedule. It remains active until Clarity’s system integration is uninstalled. There is deliberately no later adult-block toggle.
+Clarity blocks social feeds, video, shopping, gambling, torrents, news, games, entertainment, and other output killers while focus mode is active. Use the top-bar switch when you need to focus now, or define up to three non-overlapping daily focus windows—including overnight and all-day schedules.
 
-The merged list is normally around one million unique domains, but the exact count changes as its maintainers add and remove entries. No finite blacklist can literally contain every present and future adult domain; this is a massive, regularly refreshed best-effort merge.
+A unique Clarity password—not your Linux login password—is required to turn focus blocking off or alter its schedule and whitelist. Many people have a trusted friend create and hold that password for extra friction.
 
-### 2. Output focus blacklist — controlled by Clarity
+<p align="center">
+  <img src="assets/clarity-focus-off.png" alt="Clarity with distraction blocking switched off" width="100%">
+</p>
 
-While Clarity is on, it merges ten remote category feeds with an aggressive bundled catalog:
+The focus layer merges ten maintained category feeds with an aggressive bundled catalog covering:
 
-- Social networks and feeds
+- Social networks and infinite feeds
 - YouTube and other video platforms
 - Facebook, TikTok, X/Twitter, and WhatsApp infrastructure
 - Gambling and torrent sites
-- Amazon retail, advertising/media infrastructure, Prime Video, Audible, IMDb, Goodreads, and international storefronts (AWS hosting is intentionally not blocked because it would break unrelated sites and AI tools)
+- Amazon retail, Prime Video, Audible, IMDb, Goodreads, and international storefronts
 - Shopping, auctions, deal hunting, and marketplaces
-- Streaming video, livestreams, music discovery, and podcasts
+- Streaming video and livestreams
 - News cycles, opinion feeds, newsletters, forums, and viral content
 - Sports, gaming, dating, food delivery, gossip, memes, and other rabbit holes
 
-The remote feeds are refreshed weekly. The main switch only controls this focus list.
+The main Clarity switch and schedule control only this productivity-focused layer. Its remote feeds refresh weekly.
 
-### AI stays available
+### 2. Optionally block adult sites persistently
 
-`config/ai-allowlist.txt` is applied after every downloaded and bundled list. A listed domain and all of its subdomains are removed from both blocking layers.
+During setup, Clarity asks whether to enable a separate persistent adult blacklist. If selected, it stays active regardless of the main switch or focus schedule and remains until Clarity is uninstalled. If skipped, no adult feed is downloaded or applied. You can later enable it from the bottom of the Clarity panel with a two-click confirmation; once enabled, it likewise remains until uninstall.
 
-The allowlist covers ChatGPT/OpenAI, Claude/Anthropic, Perplexity, Gemini, NotebookLM, Copilot, Mistral, Grok, Meta AI, Poe, Character.AI, DeepSeek, Hugging Face, Cursor, Windsurf, Replit, v0, Bolt, Lovable, Midjourney, Runway, Suno, ElevenLabs, and other major AI tools.
+Clarity downloads, validates, merges, and de-duplicates three well-maintained feeds:
+
+- [Block List Project Porn](https://github.com/blocklistproject/Lists)
+- [HaGeZi NSFW](https://github.com/hagezi/dns-blocklists)
+- [StevenBlack `porn-only`](https://github.com/StevenBlack/hosts/tree/master/alternates/porn-only)
+
+The merged list is normally around one million unique domains. No finite blacklist can guarantee every present and future adult domain; this is a massive, regularly refreshed best-effort merge.
+
+## Whitelist what you still need
+
+Clarity automatically allows productivity-friendly music and podcast services such as Spotify, Apple Music, YouTube Music, SoundCloud, Bandcamp, Pocket Casts, and Overcast. General YouTube remains blocked. The maintained defaults live in `config/focus-allowlist.txt` and are applied on every fresh install and upgrade.
+
+Your personal focus whitelist starts empty. Paste a site URL directly into the modal whenever you genuinely need access, and Clarity removes that domain from focus blocking. The whitelist is password-protected and never bypasses the persistent adult layer.
+
+Major AI tools are protected automatically. `config/ai-allowlist.txt` explicitly keeps ChatGPT/OpenAI, Claude/Anthropic, Perplexity, Gemini, NotebookLM, Copilot, Mistral, Grok, Meta AI, Poe, Character.AI, DeepSeek, Hugging Face, Cursor, Windsurf, Replit, v0, Bolt, Lovable, Midjourney, Runway, Suno, ElevenLabs, and other AI services available.
+
+## Under the hood
+
+Clarity:
+
+- Adds root-owned sections to `/etc/hosts`.
+- Aggressively blocks social, video, shopping, gambling, torrent, news, entertainment, and other output killers while Clarity mode is enabled.
+- Persistently merges three massive, well-maintained adult-domain feeds when selected during setup.
+- Explicitly allows major AI tools such as ChatGPT and Claude.
+- Starts with distraction blocking enabled and the schedule disabled.
+- Installs persistent schedule reconciliation and weekly list updates.
 
 ## Features
 
-- Wi-Fi-style top-bar header and primary Clarity switch.
+- Native Bluetooth-style top-bar header and primary Clarity switch.
 - Dedicated scrypt-hashed Clarity password—not the Linux login password.
 - Password required to turn focus mode off.
-- One optional daily focus window, including overnight windows.
-- Password required to enable/disable the schedule, change times, or edit curated additions.
+- Up to three non-overlapping daily focus windows, including overnight windows.
+- Native schedule rows with password-protected add, edit, and delete actions.
+- Live broad-category counts for blocked domains.
+- Password-protected personal-whitelist accordion with inline removal.
+- Password required to enable/disable the schedule, change times, or edit the focus whitelist.
 - Minute-by-minute systemd schedule reconciliation.
 - Weekly refresh of all selected remote feeds.
 - Atomic, marked `/etc/hosts` updates that preserve unrelated entries.
@@ -66,7 +98,7 @@ The allowlist covers ChatGPT/OpenAI, Claude/Anthropic, Perplexity, Gemini, Noteb
 
 Clarity is strong local friction, not parental-control or enterprise security software. A person with sudo/root access can bypass software on their own machine. `/etc/hosts` cannot stop direct IP access, VPN/Tor/proxy traffic, remote browsers, or every newly created domain. Large category lists may cause false positives and can increase hostname-resolution work.
 
-Version 0.2 intentionally **does not password-lock installation or uninstallation**. The Clarity password protects focus-mode disabling and schedule/site-list changes.
+Version 0.3 intentionally **does not password-lock installation or uninstallation**. The Clarity password protects focus-mode disabling and schedule/whitelist changes.
 
 ## Requirements
 
@@ -88,22 +120,24 @@ Alternatively, open the newly added panel and press **ACTIVATE**. Setup opens in
 
 The installer will:
 
-1. Ask whether to enable or skip permanent adult blocking.
+1. Introduce Clarity’s focus and optional persistent-protection layers.
 2. Ask for a new Clarity password.
-3. Download and merge the selected blocklists.
-4. Start Clarity on and install its timers.
+3. Ask whether to enable or skip persistent adult blocking.
+4. Back up every preexisting system file Clarity will overwrite, especially `/etc/hosts`.
+5. Download and merge the selected blocklists.
+6. Start Clarity on with its schedule off and install its timers.
 
-To upgrade an existing installation after updating the plugin, rerun `install.sh`. It preserves the password, schedule, adult-block choice, and custom site additions while installing the new helper and refreshing feeds.
+To upgrade an existing installation after updating the plugin, rerun `install.sh`. It preserves the password, schedule, adult-block choice, and focus whitelist while installing the new helper and refreshing feeds.
 
 ## Schedule
 
-When enabled, Clarity is on from the start time up to—but not including—the end time:
+The modal displays and accepts standard 12-hour time. Add up to three daily windows; overlapping windows are rejected. When enabled, Clarity is on from each start time up to—but not including—its end time:
 
-- `09:00 → 17:00`: daytime focus.
-- `22:00 → 06:00`: overnight focus.
-- Equal start/end times: all-day focus.
+- `9:00 AM → 5:00 PM`: daytime focus.
+- `10:00 PM → 6:00 AM`: overnight focus.
+- Equal start/end times: all-day focus and therefore the only possible window.
 
-The password is required to toggle the schedule or save new times.
+The password is required to toggle the schedule or add, edit, or remove windows. The modal accepts common time forms and normalizes them to 12-hour display; the CLI uses canonical 24-hour `HH:MM` values.
 
 ## CLI
 
@@ -113,16 +147,21 @@ CLARITY=~/.config/omarchy/plugins/io.github.tyrichards.clarity/bin/clarityctl
 $CLARITY status
 $CLARITY on
 $CLARITY off
-$CLARITY schedule enabled 09:00 17:00
-$CLARITY schedule disabled 09:00 17:00
-$CLARITY sites list
-$CLARITY sites edit
+$CLARITY schedule add 09:00 12:00
+$CLARITY schedule add 13:00 17:00
+$CLARITY schedule enabled
+$CLARITY schedule edit 0 08:30 12:00
+$CLARITY schedule remove 0
+$CLARITY schedule disabled
+$CLARITY whitelist add https://example.com
+$CLARITY whitelist list
+$CLARITY whitelist remove example.com
 $CLARITY update-lists
 ```
 
 Passwords are read from a hidden prompt or stdin and are never placed in process arguments. The root-owned record uses scrypt with a random salt; plaintext is not stored.
 
-`sites edit` changes the local curated additions. Remote category feeds remain part of focus mode and cannot be emptied through the editor.
+The modal adds one pasted URL at a time. The CLI also retains `whitelist edit` for bulk maintenance. Neither interface exposes the bundled blocklists or bypasses persistent adult protection.
 
 ## Files and services
 
@@ -133,23 +172,28 @@ Passwords are read from a hidden prompt or stdin and are never placed in process
 /usr/local/lib/clarity/clarity-root                 Root-owned helper
 /var/lib/clarity/config.json                        Mode, setup choice, schedule
 /var/lib/clarity/password.json                      Root-only scrypt record
+/var/lib/clarity/backup-manifest.json               Original system-file inventory
+/var/lib/clarity/hosts.pre-clarity                  Exact activation-time hosts snapshot
+/var/lib/clarity/system-backups/                    Other overwritten originals
 /var/lib/clarity/adult-domains.txt                  Merged permanent feed
 /var/lib/clarity/distraction-feed-domains.txt       Merged focus feeds
-/var/lib/clarity/distractions.txt                   Curated/custom additions
+/var/lib/clarity/distractions.txt                   Bundled focus additions
 /var/lib/clarity/ai-allowlist.txt                   Explicit AI exclusions
+/var/lib/clarity/focus-allowlist.txt                Built-in music/podcast exclusions
+/var/lib/clarity/whitelist.txt                      User focus whitelist
 ```
 
 ## Uninstall
 
-Version 0.2 removal is deliberately not password-locked:
+Version 0.3 removal is deliberately not password-locked:
 
 ```sh
 ~/.config/omarchy/plugins/io.github.tyrichards.clarity/uninstall.sh
 ```
 
-This disables timers, removes all Clarity sections from `/etc/hosts`, deletes root-owned state/helper files, and removes the Omarchy plugin. If permanent adult blocking was selected, uninstall is the operation that removes it.
+This disables timers, restores the exact activation-time `/etc/hosts` snapshot, restores every other system file that existed before Clarity, removes files Clarity created, and deletes all password/setup state. **Exact hosts restoration intentionally discards unrelated hosts entries added after activation.** Reinstalling Clarity therefore requires the complete onboarding flow and a new password.
 
-Do not run `omarchy plugin remove` by itself because that removes only the UI. If that happens, clean up with:
+The main Clarity toggle only controls focus blocking and never restores system backups. Omarchy’s generic `plugin disable` and `plugin remove` commands have no cleanup lifecycle hook, so do not use them as substitutes for `uninstall.sh`. If the UI was removed first, restore the system with:
 
 ```sh
 sudo /usr/local/lib/clarity/clarity-root uninstall
