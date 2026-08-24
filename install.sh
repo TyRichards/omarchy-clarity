@@ -10,6 +10,12 @@ fail() {
   exit 1
 }
 
+authorize_admin() {
+  [[ -t 0 && -t 1 ]] || fail "administrator authorization requires an interactive terminal"
+  sudo -k
+  sudo -v
+}
+
 set_ansi_color() {
   local color=$1
   local hex red green blue
@@ -267,9 +273,10 @@ fi
 
 if [[ -x $ROOT_HELPER ]]; then
   printf 'Upgrading Clarity blocklists and system integration…\n'
-  sudo -v
+  printf 'Linux administrator authorization is required for this upgrade.\n'
+  authorize_admin
   sudo install -Dm755 "$SCRIPT_DIR/lib/clarity-root" "$ROOT_HELPER"
-  sudo -n "$ROOT_HELPER" upgrade "$SCRIPT_DIR"
+  sudo "$ROOT_HELPER" upgrade "$SCRIPT_DIR"
   omarchy plugin enable "$PLUGIN_ID" right >/dev/null 2>&1 || true
   omarchy-shell shell rescanPlugins >/dev/null 2>&1 || true
   printf '\nClarity is ready with your clarity password, schedule off, full list, and no whitelist yet.\n'
@@ -319,9 +326,9 @@ else
   adult_state=disabled
 fi
 
-printf 'Authorizing one-time system installation…\n'
-sudo -v
-printf '%s\n' "$password" | sudo -n "$SCRIPT_DIR/lib/clarity-root" bootstrap "$SCRIPT_DIR" "$USER" "$adult_state"
+printf 'Linux administrator authorization is required for this one-time system installation…\n'
+authorize_admin
+printf '%s\n' "$password" | sudo "$SCRIPT_DIR/lib/clarity-root" bootstrap "$SCRIPT_DIR" "$USER" "$adult_state"
 unset password
 
 omarchy plugin enable "$PLUGIN_ID" right >/dev/null 2>&1 || true

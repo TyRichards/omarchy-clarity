@@ -98,7 +98,7 @@ Clarity:
 
 Clarity is strong local friction, not parental-control or enterprise security software. A person with sudo/root access can bypass software on their own machine. `/etc/hosts` cannot stop direct IP access, VPN/Tor/proxy traffic, remote browsers, or every newly created domain. Large category lists may cause false positives and can increase hostname-resolution work.
 
-Version 0.3 intentionally **does not password-lock installation or uninstallation**. The Clarity password protects focus-mode disabling and schedule/whitelist changes.
+Version 0.3.2 intentionally **does not use the Clarity password for installation, upgrades, or uninstallation**. Those privileged lifecycle operations require explicit Linux administrator authorization instead. The Clarity password protects focus-mode disabling and schedule/whitelist changes.
 
 ## Requirements
 
@@ -106,6 +106,12 @@ Version 0.3 intentionally **does not password-lock installation or uninstallatio
 - Python 3.11+
 - systemd and systemd-resolved
 - `sudo`, `visudo`, and internet access during setup
+
+## Security model
+
+Clarity’s root-owned helper is passwordlessly authorized only for narrowly matched runtime commands used by the panel. The sudoers policy never authorizes `bootstrap`, `upgrade`, or `uninstall`; those lifecycle operations invalidate cached sudo credentials and require interactive Linux administrator authorization.
+
+Remote feeds are bounded before processing: each response is limited to 64 MiB and 2,000,000 unique domains, with a 3,000,000-domain merged-list ceiling. Oversized sources are rejected instead of being materialized without limit.
 
 ## Install
 
@@ -127,7 +133,7 @@ The installer will:
 5. Download and merge the selected blocklists.
 6. Start Clarity on with its schedule off and install its timers.
 
-To upgrade an existing installation after updating the plugin, rerun `install.sh`. It preserves the password, schedule, adult-block choice, and focus whitelist while installing the new helper and refreshing feeds.
+To upgrade an existing installation after updating the plugin, rerun `install.sh`. It requires interactive Linux administrator authorization, then preserves the Clarity password, schedule, adult-block choice, and focus whitelist while installing the new helper and refreshing feeds.
 
 ## Schedule
 
@@ -185,7 +191,7 @@ The modal adds one pasted URL at a time. The CLI also retains `whitelist edit` f
 
 ## Uninstall
 
-Version 0.3 removal is deliberately not password-locked:
+Version 0.3.2 removal never requires the Clarity password, but it does require interactive Linux administrator authorization:
 
 ```sh
 ~/.config/omarchy/plugins/io.github.tyrichards.clarity/uninstall.sh

@@ -17,6 +17,15 @@ run_root() {
   sudo -n "$ROOT_HELPER" "$@"
 }
 
+run_admin() {
+  installed || fail "Clarity system integration is not installed; run install.sh first"
+  [[ -t 0 && -t 1 ]] || fail "administrator authorization requires an interactive terminal"
+  printf 'Linux administrator authorization is required.\n' >&2
+  sudo -k
+  sudo -v
+  sudo "$ROOT_HELPER" "$@"
+}
+
 read_clarity_password() {
   local prompt="${1:-Clarity password: }"
   local password
@@ -55,7 +64,7 @@ Commands:
   update-adult                   Alias for update-lists
   enable-adult                   Permanently enable adult blocking until uninstall
   reconcile                      Re-apply current state
-  uninstall                      Remove system integration (v1: no password)
+  uninstall                      Remove integration with Linux admin authorization
 USAGE
 }
 
@@ -223,7 +232,7 @@ reconcile)
   ;;
 uninstall)
   (($# == 0)) || fail "uninstall takes no arguments"
-  run_root uninstall
+  run_admin uninstall
   ;;
 *)
   fail "unknown command '$command' (try --help)"

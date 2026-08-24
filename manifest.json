@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.tyrichards.clarity",
   "name": "Clarity",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "author": "Ty Richards",
   "description": "Password-guarded focus blocking with schedules, live stats, whitelists, and optional persistent adult protection",
   "license": "MIT",

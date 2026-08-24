@@ -93,6 +93,35 @@ class ClarityRootTests(unittest.TestCase):
         self.assertIn("# BEGIN CLARITY DISTRACTIONS", hosts)
         self.assertIn("192.0.2.10 keep.example.test", hosts)
 
+    def test_sudoers_excludes_privileged_lifecycle_commands(self):
+        sudoers = (self.root / "etc/sudoers.d/clarity").read_text(encoding="utf-8")
+        self.assertNotIn("*", sudoers)
+        for forbidden in ("bootstrap", "upgrade", "uninstall"):
+            self.assertNotIn(forbidden, sudoers)
+        for allowed in (
+            "clarity-root status",
+            "clarity-root enable",
+            "clarity-root disable",
+            "schedule-window-add",
+            "whitelist-add",
+            "clarity-root update-lists",
+        ):
+            self.assertIn(allowed, sudoers)
+        self.assertTrue(
+            all("NOPASSWD:" in line for line in sudoers.splitlines() if line.startswith("testuser "))
+        )
+
+    def test_lifecycle_scripts_force_linux_admin_authorization(self):
+        installer = (PLUGIN_DIR / "install.sh").read_text(encoding="utf-8")
+        uninstaller = (PLUGIN_DIR / "uninstall.sh").read_text(encoding="utf-8")
+        cli = (PLUGIN_DIR / "bin/clarityctl").read_text(encoding="utf-8")
+        for script in (installer, uninstaller, cli):
+            self.assertIn("sudo -k", script)
+            self.assertIn("sudo -v", script)
+        self.assertNotIn('sudo -n "$ROOT_HELPER" upgrade', installer)
+        self.assertNotIn('run_root uninstall', cli)
+        self.assertNotIn('sudo -n "$ROOT_HELPER" uninstall', uninstaller)
+
     def test_ai_sites_are_removed_from_every_downloaded_feed(self):
         hosts = (self.root / "etc/hosts").read_text(encoding="utf-8")
         self.assertNotIn("openai.com", hosts)
@@ -134,6 +163,26 @@ class ClarityRootTests(unittest.TestCase):
         hosts = (self.root / "etc/hosts").read_text(encoding="utf-8")
         self.assertIn("# BEGIN CLARITY PERMANENT", hosts)
         self.assertIn("adult-one.test", hosts)
+
+    def test_download_rejects_oversized_responses(self):
+        oversized = self.root / "oversized-feed"
+        oversized.write_text("a" * 65, encoding="utf-8")
+        self.env["CLARITY_ADULT_URLS"] = oversized.as_uri()
+        self.env["CLARITY_MAX_SOURCE_BYTES"] = "64"
+        result = self.run_helper("update-lists")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("64-byte safety limit", result.stderr)
+
+    def test_download_rejects_too_many_domains(self):
+        crowded = self.root / "crowded-feed"
+        crowded.write_text(
+            "one.test\ntwo.test\nthree.test\nfour.test\n", encoding="utf-8"
+        )
+        self.env["CLARITY_ADULT_URLS"] = crowded.as_uri()
+        self.env["CLARITY_MAX_SOURCE_DOMAINS"] = "3"
+        result = self.run_helper("update-lists")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("3-domain safety limit", result.stderr)
 
     def test_failed_later_adult_enable_rolls_back_opt_out(self):
         result = self.run_helper("uninstall")
