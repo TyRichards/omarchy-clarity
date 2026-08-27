@@ -41,7 +41,7 @@ The focus layer merges ten maintained category feeds with an aggressive bundled 
 - Facebook, TikTok, X/Twitter, and WhatsApp infrastructure
 - Gambling and torrent sites
 - Amazon retail, Prime Video, Audible, IMDb, Goodreads, and international storefronts
-- Shopping, auctions, deal hunting, and marketplaces
+- SHEIN regional storefronts, fast fashion, shopping, auctions, deal hunting, and marketplaces
 - Streaming video and livestreams
 - News cycles, opinion feeds, newsletters, forums, and viral content
 - Sports, gaming, dating, food delivery, gossip, memes, and other rabbit holes
@@ -98,7 +98,7 @@ Clarity:
 
 Clarity is strong local friction, not parental-control or enterprise security software. A person with sudo/root access can bypass software on their own machine. `/etc/hosts` cannot stop direct IP access, VPN/Tor/proxy traffic, remote browsers, or every newly created domain. Large category lists may cause false positives and can increase hostname-resolution work.
 
-Version 0.3.2 intentionally **does not use the Clarity password for installation, upgrades, or uninstallation**. Those privileged lifecycle operations require explicit Linux administrator authorization instead. The Clarity password protects focus-mode disabling and schedule/whitelist changes.
+Clarity intentionally **does not use the Clarity password for installation, upgrades, or uninstallation**. Those privileged lifecycle operations require explicit Linux administrator authorization instead. The Clarity password protects focus-mode disabling and schedule/whitelist changes.
 
 ## Requirements
 
@@ -191,7 +191,7 @@ The modal adds one pasted URL at a time. The CLI also retains `whitelist edit` f
 
 ## Uninstall
 
-Version 0.3.2 removal never requires the Clarity password, but it does require interactive Linux administrator authorization:
+Clarity removal never requires the Clarity password, but it does require interactive Linux administrator authorization:
 
 ```sh
 ~/.config/omarchy/plugins/io.github.tyrichards.clarity/uninstall.sh

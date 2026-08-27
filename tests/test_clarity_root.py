@@ -122,6 +122,21 @@ class ClarityRootTests(unittest.TestCase):
         self.assertNotIn('run_root uninstall', cli)
         self.assertNotIn('sudo -n "$ROOT_HELPER" uninstall', uninstaller)
 
+    def test_shein_and_similar_shopping_sites_are_blocked(self):
+        hosts = (self.root / "etc/hosts").read_text(encoding="utf-8")
+        for domain in (
+            "shein.com",
+            "us.shein.com",
+            "romwe.com",
+            "boohoo.com",
+            "fashionnova.com",
+            "shopcider.com",
+            "dhgate.com",
+            "shopee.com",
+            "thredup.com",
+        ):
+            self.assertIn(domain, hosts)
+
     def test_ai_sites_are_removed_from_every_downloaded_feed(self):
         hosts = (self.root / "etc/hosts").read_text(encoding="utf-8")
         self.assertNotIn("openai.com", hosts)
