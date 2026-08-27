@@ -66,6 +66,7 @@ MAX_MERGED_DOMAINS = int(os.environ.get("CLARITY_MAX_MERGED_DOMAINS", "3000000")
 MAX_PASSWORD_CHARS = 4096
 MAX_WHITELIST_CHARS = 1024 * 1024
 MAX_WHITELIST_DOMAINS = 10000
+SCHEDULE_OVERRIDE_SECONDS = 24 * 60 * 60
 TEST_ROOT = os.environ.get("CLARITY_TEST_ROOT", "")
 
 
@@ -399,7 +400,38 @@ def inside_schedule(config: dict, now: dt.datetime | None = None) -> bool:
     )
 
 
+def parse_timestamp(value: str) -> dt.datetime | None:
+    try:
+        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.astimezone()
+    return parsed
+
+
+def current_time(now: dt.datetime | None = None) -> dt.datetime:
+    current = now or dt.datetime.now().astimezone()
+    if current.tzinfo is None:
+        return current.astimezone()
+    return current
+
+
+def schedule_override(config: dict, now: dt.datetime | None = None) -> bool | None:
+    if not bool(config.get("scheduleEnabled", False)):
+        return None
+    until = parse_timestamp(str(config.get("scheduleOverrideUntil", "")))
+    if until is None:
+        return None
+    if until <= current_time(now):
+        return None
+    return bool(config.get("scheduleOverrideActive", False))
+
+
 def effective_active(config: dict, now: dt.datetime | None = None) -> bool:
+    override = schedule_override(config, now)
+    if override is not None:
+        return override
     if bool(config.get("scheduleEnabled", False)):
         return inside_schedule(config, now)
     return bool(config.get("manualEnabled", True))
@@ -790,7 +822,10 @@ def status() -> dict:
             "adultCount",
             lambda: len(without_allowlisted(read_domains(ADULT_FILE), read_domains(ALLOWLIST_FILE))),
         )
-    if bool(config.get("scheduleEnabled", False)):
+    override = schedule_override(config)
+    if override is not None:
+        reason = "Manual override enabled" if active else "Manual override disabled"
+    elif bool(config.get("scheduleEnabled", False)):
         reason = "Inside focus window" if active else "Outside focus window"
     else:
         reason = "Manual focus enabled" if active else "Manual focus disabled"
@@ -803,6 +838,8 @@ def status() -> dict:
         "scheduleStart": str(config.get("scheduleStart", "09:00")),
         "scheduleEnd": str(config.get("scheduleEnd", "17:00")),
         "scheduleWindows": schedule_windows(config),
+        "scheduleOverrideActive": override,
+        "scheduleOverrideUntil": str(config.get("scheduleOverrideUntil", "")) if override is not None else "",
         "permanentEnabled": bool(config.get("adultBlockingEnabled", True)),
         "permanentCount": cached_count(
             config,
@@ -832,12 +869,18 @@ def set_manual(enabled: bool, password: str | None = None) -> None:
         if password is None:
             fail("Clarity password is required")
         verify_password(password)
-        # A deliberate manual off also turns schedule control off. Otherwise
-        # the next minute would silently turn blocking back on.
-        config["scheduleEnabled"] = False
-    elif bool(config.get("scheduleEnabled", False)):
-        fail("the daily schedule currently controls Clarity")
-    config["manualEnabled"] = enabled
+    if bool(config.get("scheduleEnabled", False)):
+        # The primary toggle is always allowed to override the schedule, but
+        # only temporarily. After 24 hours the configured schedule becomes the
+        # source of truth again.
+        config["scheduleOverrideActive"] = enabled
+        config["scheduleOverrideUntil"] = (
+            dt.datetime.now().astimezone() + dt.timedelta(seconds=SCHEDULE_OVERRIDE_SECONDS)
+        ).isoformat(timespec="seconds")
+    else:
+        config["manualEnabled"] = enabled
+        config.pop("scheduleOverrideActive", None)
+        config.pop("scheduleOverrideUntil", None)
     write_json(CONFIG_FILE, config)
     apply_hosts()
 
@@ -849,6 +892,8 @@ def set_schedule(enabled: bool, start: str, end: str, password: str) -> None:
     parse_time(end)
     config = read_json(CONFIG_FILE)
     config["scheduleEnabled"] = enabled
+    config.pop("scheduleOverrideActive", None)
+    config.pop("scheduleOverrideUntil", None)
     config["scheduleStart"] = start
     config["scheduleEnd"] = end
     config["scheduleWindows"] = [{"start": start, "end": end}]
@@ -863,6 +908,8 @@ def set_schedule_enabled(enabled: bool, password: str) -> None:
     if enabled and not schedule_windows(config):
         fail("add at least one schedule window before enabling the schedule")
     config["scheduleEnabled"] = enabled
+    config.pop("scheduleOverrideActive", None)
+    config.pop("scheduleOverrideUntil", None)
     write_json(CONFIG_FILE, config)
     apply_hosts()
 

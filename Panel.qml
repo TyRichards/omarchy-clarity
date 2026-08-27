@@ -282,7 +282,6 @@ Panel {
       return
     }
     if (clarityActive) requestPassword("disable")
-    else if (scheduleEnabled) statusMessage = "The daily schedule controls Clarity right now."
     else {
       optimisticClarityState = 1
       runAction(["on"])

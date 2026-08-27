@@ -377,7 +377,7 @@ class ClarityRootTests(unittest.TestCase):
         self.assertNotEqual(self.run_helper("disable", input=PASSWORD + "\n").returncode, 0)
         self.assertEqual(self.run_helper("disable", input=new_password + "\n").returncode, 0)
 
-    def test_overnight_window_logic(self):
+    def load_helper_module(self):
         old_root = os.environ.get("CLARITY_TEST_ROOT")
         os.environ["CLARITY_TEST_ROOT"] = str(self.root)
         try:
@@ -385,23 +385,62 @@ class ClarityRootTests(unittest.TestCase):
             spec = importlib.util.spec_from_loader(loader.name, loader)
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
-            import datetime as dt
-
-            config = {
-                "scheduleWindows": [
-                    {"start": "09:00", "end": "12:00"},
-                    {"start": "22:00", "end": "06:00"},
-                ]
-            }
-            self.assertTrue(module.inside_schedule(config, dt.datetime(2026, 1, 1, 10, 0)))
-            self.assertTrue(module.inside_schedule(config, dt.datetime(2026, 1, 1, 23, 0)))
-            self.assertTrue(module.inside_schedule(config, dt.datetime(2026, 1, 1, 5, 59)))
-            self.assertFalse(module.inside_schedule(config, dt.datetime(2026, 1, 1, 12, 0)))
+            return module
         finally:
             if old_root is None:
                 os.environ.pop("CLARITY_TEST_ROOT", None)
             else:
                 os.environ["CLARITY_TEST_ROOT"] = old_root
+
+    def test_overnight_window_logic(self):
+        module = self.load_helper_module()
+        import datetime as dt
+
+        config = {
+            "scheduleWindows": [
+                {"start": "09:00", "end": "12:00"},
+                {"start": "22:00", "end": "06:00"},
+            ]
+        }
+        self.assertTrue(module.inside_schedule(config, dt.datetime(2026, 1, 1, 10, 0)))
+        self.assertTrue(module.inside_schedule(config, dt.datetime(2026, 1, 1, 23, 0)))
+        self.assertTrue(module.inside_schedule(config, dt.datetime(2026, 1, 1, 5, 59)))
+        self.assertFalse(module.inside_schedule(config, dt.datetime(2026, 1, 1, 12, 0)))
+
+    def test_schedule_override_temporarily_beats_schedule(self):
+        module = self.load_helper_module()
+        import datetime as dt
+
+        now = dt.datetime(2026, 1, 1, 12, 0).astimezone()
+        future = (now + dt.timedelta(hours=1)).isoformat()
+        past = (now - dt.timedelta(seconds=1)).isoformat()
+        config = {
+            "scheduleEnabled": True,
+            "scheduleWindows": [{"start": "09:00", "end": "17:00"}],
+            "scheduleOverrideActive": False,
+            "scheduleOverrideUntil": future,
+        }
+        self.assertFalse(module.effective_active(config, now))
+        config["scheduleOverrideActive"] = True
+        config["scheduleWindows"] = [{"start": "18:00", "end": "19:00"}]
+        self.assertTrue(module.effective_active(config, now))
+        config["scheduleOverrideUntil"] = past
+        self.assertFalse(module.effective_active(config, now))
+
+    def test_primary_toggle_creates_24_hour_schedule_override(self):
+        config_file = self.root / "var/lib/clarity/config.json"
+        config = json.loads(config_file.read_text(encoding="utf-8"))
+        config["scheduleEnabled"] = True
+        config["scheduleWindows"] = [{"start": "23:58", "end": "23:59"}]
+        config_file.write_text(json.dumps(config), encoding="utf-8")
+
+        result = self.run_helper("enable")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        state = self.status()
+        self.assertTrue(state["active"])
+        self.assertTrue(state["scheduleEnabled"])
+        self.assertTrue(state["scheduleOverrideActive"])
+        self.assertNotEqual(state["scheduleOverrideUntil"], "")
 
 
 if __name__ == "__main__":
